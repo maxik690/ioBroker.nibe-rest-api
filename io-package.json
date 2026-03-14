@@ -1,0 +1,106 @@
+{
+    "common": {
+        "name": "nibe-rest-api",
+        "version": "0.0.1",
+        "news": {
+            "0.0.1": {
+                "en": "initial release",
+                "de": "Erstveröffentlichung",
+                "ru": "Начальная версия",
+                "pt": "lançamento inicial",
+                "nl": "Eerste uitgave",
+                "fr": "Première version",
+                "it": "Versione iniziale",
+                "es": "Versión inicial",
+                "pl": "Pierwsze wydanie",
+                "uk": "Початкова версія",
+                "zh-cn": "首次出版"
+            }
+        },
+        "titleLang": {
+            "en": "Nibe REST API",
+            "de": "Nibe REST-API",
+            "ru": "Нибе REST API",
+            "pt": "API REST do Nibe",
+            "nl": "Nibe REST-API",
+            "fr": "API REST Nibe",
+            "it": "API REST Nibe",
+            "es": "API REST de Nibe",
+            "pl": "API REST Nibe’a",
+            "uk": "Nibe REST API",
+            "zh-cn": "尼贝 REST API"
+        },
+        "desc": {
+            "en": "Read and write datapoints of your Nibe Heatpump via REST API (integrated from Firmware 4.6.4). Developed with my Nibe S1155.",
+            "de": "Lesen und schreiben Sie Datenpunkte Ihrer Nibe-Wärmepumpe über die REST-API (integriert ab Firmware 4.6.4). Entwickelt mit meinem Nibe S1155.",
+            "ru": "Чтение и запись точек данных вашего теплового насоса Nibe через REST API (интегрировано из прошивки 4.6.4). Разработано на моем Nibe S1155.",
+            "pt": "Leia e grave pontos de dados do seu Nibe Heatpump via REST API (integrado no Firmware 4.6.4). Desenvolvido com meu Nibe S1155.",
+            "nl": "Lees en schrijf datapunten van uw Nibe Warmtepomp via REST API (geïntegreerd vanaf Firmware 4.6.4). Ontwikkeld met mijn Nibe S1155.",
+            "fr": "Lisez et écrivez les points de données de votre pompe à chaleur Nibe via l'API REST (intégrée à partir du micrologiciel 4.6.4). Développé avec mon Nibe S1155.",
+            "it": "Leggi e scrivi punti dati della tua pompa di calore Nibe tramite API REST (integrata dal firmware 4.6.4). Sviluppato con il mio Nibe S1155.",
+            "es": "Lea y escriba puntos de datos de su Nibe Heatpump a través de REST API (integrada desde el firmware 4.6.4). Desarrollado con mi Nibe S1155.",
+            "pl": "Odczyt i zapis punktów danych pompy ciepła Nibe za pośrednictwem interfejsu API REST (zintegrowanego z oprogramowaniem sprzętowym 4.6.4). Opracowany z moim Nibe S1155.",
+            "uk": "Читайте та записуйте точки даних вашого теплового насоса Nibe через REST API (інтегровано з мікропрограми 4.6.4). Розроблено з моїм Nibe S1155.",
+            "zh-cn": "通过 REST API（从固件 4.6.4 集成）读取和写入 Nibe 热泵的数据点。使用我的 Nibe S1155 开发。"
+        },
+        "authors": ["Maximilian Kramer <maxi_kramer@web.de>"],
+        "keywords": ["Nibe", "S1155", "iot", "heatpump"],
+        "licenseInformation": {
+            "type": "free",
+            "license": "MIT"
+        },
+        "platform": "Javascript/Node.js",
+        "icon": "nibe-rest-api.png",
+        "enabled": true,
+        "extIcon": "https://raw.githubusercontent.com/maxik690/ioBroker.nibe-rest-api/main/admin/nibe-rest-api.png",
+        "readme": "https://github.com/maxik690/ioBroker.nibe-rest-api/blob/main/README.md",
+        "loglevel": "info",
+        "tier": 3,
+        "mode": "daemon",
+        "type": "climate-control",
+        "compact": true,
+        "connectionType": "local",
+        "dataSource": "poll",
+        "adminUI": {
+            "config": "json"
+        },
+        "dependencies": [
+            {
+                "js-controller": ">=6.0.11"
+            }
+        ],
+        "globalDependencies": [
+            {
+                "admin": ">=7.0.23"
+            }
+        ]
+    },
+    "native": {
+        "option1": true,
+        "option2": "42"
+    },
+    "objects": [],
+    "instanceObjects": [
+        {
+            "_id": "info",
+            "type": "channel",
+            "common": {
+                "name": "Information"
+            },
+            "native": {}
+        },
+        {
+            "_id": "info.connection",
+            "type": "state",
+            "common": {
+                "role": "indicator.connected",
+                "name": "Device or service connected",
+                "type": "boolean",
+                "read": true,
+                "write": false,
+                "def": false
+            },
+            "native": {}
+        }
+    ]
+}
