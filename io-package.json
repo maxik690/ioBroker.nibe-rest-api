@@ -32,7 +32,7 @@
         },
         "desc": {
             "en": "Read and write datapoints of your Nibe Heatpump via REST API (integrated from Firmware 4.6.4). Developed with my Nibe S1155.",
-            "de": "Lesen und schreiben Sie Datenpunkte Ihrer Nibe-Wärmepumpe über die REST-API (integriert ab Firmware 4.6.4). Entwickelt mit meinem Nibe S1155.",
+            "de": "Lesen und schreiben Sie Datenpunkte Ihrer Nibe-Wärmepumpe über die REST-API (integriert ab Firmware 4.6.4). Entwickelt mit meiner Nibe S1155.",
             "ru": "Чтение и запись точек данных вашего теплового насоса Nibe через REST API (интегрировано из прошивки 4.6.4). Разработано на моем Nibe S1155.",
             "pt": "Leia e grave pontos de dados do seu Nibe Heatpump via REST API (integrado no Firmware 4.6.4). Desenvolvido com meu Nibe S1155.",
             "nl": "Lees en schrijf datapunten van uw Nibe Warmtepomp via REST API (geïntegreerd vanaf Firmware 4.6.4). Ontwikkeld met mijn Nibe S1155.",
@@ -76,8 +76,15 @@
         ]
     },
     "native": {
-        "option1": true,
-        "option2": "42"
+        "baseUrl": "https://192.168.0.100:8443",
+        "username": "",
+        "password": "",
+        "basicAuth": "",
+        "pollInterval": 60,
+        "writeLockInterval": 120,
+        "deviceIds": "",
+        "ignoreTlsErrors": true,
+        "fetchNotifications": true
     },
     "objects": [],
     "instanceObjects": [
@@ -99,6 +106,32 @@
                 "read": true,
                 "write": false,
                 "def": false
+            },
+            "native": {}
+        },
+        {
+            "_id": "info.lastSync",
+            "type": "state",
+            "common": {
+                "role": "value.time",
+                "name": "Last successful synchronization",
+                "type": "string",
+                "read": true,
+                "write": false,
+                "def": ""
+            },
+            "native": {}
+        },
+        {
+            "_id": "info.lastError",
+            "type": "state",
+            "common": {
+                "role": "text",
+                "name": "Last error message",
+                "type": "string",
+                "read": true,
+                "write": false,
+                "def": ""
             },
             "native": {}
         }

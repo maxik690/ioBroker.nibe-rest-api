@@ -2,9 +2,20 @@
     "i18n": true,
     "type": "panel",
     "items": {
-        "option1": {
-            "type": "checkbox",
-            "label": "option1",
+        "baseUrl": {
+            "type": "text",
+            "label": "Base URL",
+            "help": "Example: https://192.168.2.107:8443",
+            "newLine": true,
+            "xs": 12,
+            "sm": 12,
+            "md": 8,
+            "lg": 6,
+            "xl": 6
+        },
+        "username": {
+            "type": "text",
+            "label": "Username",
             "newLine": true,
             "xs": 12,
             "sm": 12,
@@ -12,10 +23,73 @@
             "lg": 4,
             "xl": 4
         },
-        "option2": {
+        "password": {
+            "type": "password",
+            "label": "Password",
+            "xs": 12,
+            "sm": 12,
+            "md": 6,
+            "lg": 4,
+            "xl": 4
+        },
+        "basicAuth": {
             "type": "text",
-            "label": "option2",
+            "label": "Basic auth hash",
+            "help": "Optional. If set, this value is sent after 'Basic '. Username/password are then ignored.",
             "newLine": true,
+            "xs": 12,
+            "sm": 12,
+            "md": 8,
+            "lg": 6,
+            "xl": 6
+        },
+        "pollInterval": {
+            "type": "number",
+            "label": "Poll interval (seconds)",
+            "min": 5,
+            "newLine": true,
+            "xs": 12,
+            "sm": 12,
+            "md": 4,
+            "lg": 3,
+            "xl": 2
+        },
+        "writeLockInterval": {
+            "type": "number",
+            "label": "Write lock interval (seconds)",
+            "help": "Minimum time between two writes to the same state. Set to 0 to disable.",
+            "min": 0,
+            "xs": 12,
+            "sm": 12,
+            "md": 4,
+            "lg": 3,
+            "xl": 2
+        },
+        "deviceIds": {
+            "type": "text",
+            "label": "Device IDs",
+            "help": "Optional comma-separated list. Empty = all devices returned by the API.",
+            "xs": 12,
+            "sm": 12,
+            "md": 8,
+            "lg": 6,
+            "xl": 6
+        },
+        "ignoreTlsErrors": {
+            "type": "checkbox",
+            "label": "Ignore TLS certificate errors",
+            "help": "Useful for local/self-signed certificates.",
+            "newLine": true,
+            "xs": 12,
+            "sm": 12,
+            "md": 6,
+            "lg": 4,
+            "xl": 4
+        },
+        "fetchNotifications": {
+            "type": "checkbox",
+            "label": "Fetch notifications",
+            "help": "Reads active alarms for each device during polling.",
             "xs": 12,
             "sm": 12,
             "md": 6,

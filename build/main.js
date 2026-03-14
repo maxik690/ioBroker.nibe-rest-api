@@ -5,6 +5,10 @@ var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
 var __copyProps = (to, from, except, desc) => {
   if (from && typeof from === "object" || typeof from === "function") {
     for (let key of __getOwnPropNames(from))
@@ -21,8 +25,24 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
   mod
 ));
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+var main_exports = {};
+__export(main_exports, {
+  NibeRestApi: () => NibeRestApi
+});
+module.exports = __toCommonJS(main_exports);
 var utils = __toESM(require("@iobroker/adapter-core"));
+var import_node_buffer = require("node:buffer");
+var https = __toESM(require("node:https"));
+const INVISIBLE_WORD_JOINERS = /[\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180B-\u180D\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFE00-\uFE0F\uFEFF]/g;
+const COMBINING_MARKS = /[\u0300-\u036f]/g;
 class NibeRestApi extends utils.Adapter {
+  pollTimer;
+  pollInProgress = false;
+  writablePoints = /* @__PURE__ */ new Map();
+  deviceModes = /* @__PURE__ */ new Map();
+  loggedUnknownPointShapes = /* @__PURE__ */ new Set();
+  lastSuccessfulWrites = /* @__PURE__ */ new Map();
   constructor(options = {}) {
     super({
       ...options,
@@ -32,96 +52,802 @@ class NibeRestApi extends utils.Adapter {
     this.on("stateChange", this.onStateChange.bind(this));
     this.on("unload", this.onUnload.bind(this));
   }
-  /**
-   * Is called when databases are connected and adapter received configuration.
-   */
   async onReady() {
-    this.setState("info.connection", false, true);
-    this.log.debug("config option1: ${this.config.option1}");
-    this.log.debug("config option2: ${this.config.option2}");
-    await this.setObjectNotExistsAsync("testVariable", {
+    var _a;
+    await this.setState("info.connection", false, true);
+    await this.setObjectNotExistsAsync("info.lastSync", {
       type: "state",
       common: {
-        name: "testVariable",
-        type: "boolean",
-        role: "indicator",
+        name: "Last successful synchronization",
+        type: "string",
+        role: "value.time",
         read: true,
-        write: true
+        write: false
       },
       native: {}
     });
-    this.subscribeStates("testVariable");
-    await this.setState("testVariable", true);
-    await this.setState("testVariable", { val: true, ack: true });
-    await this.setState("testVariable", { val: true, ack: true, expire: 30 });
-    const pwdResult = await this.checkPasswordAsync("admin", "iobroker");
-    this.log.info(`check user admin pw iobroker: ${JSON.stringify(pwdResult)}`);
-    const groupResult = await this.checkGroupAsync("admin", "admin");
-    this.log.info(`check group user admin group admin: ${JSON.stringify(groupResult)}`);
+    await this.setObjectNotExistsAsync("info.lastError", {
+      type: "state",
+      common: {
+        name: "Last error message",
+        type: "string",
+        role: "text",
+        read: true,
+        write: false
+      },
+      native: {}
+    });
+    if (!((_a = this.config.baseUrl) == null ? void 0 : _a.trim())) {
+      this.log.error("Missing base URL. Please configure the adapter first.");
+      await this.setState("info.lastError", "Missing base URL", true);
+      return;
+    }
+    if (!this.getAuthorizationHeaderValue()) {
+      this.log.error("Missing authentication. Configure username/password or a Basic auth hash.");
+      await this.setState("info.lastError", "Missing authentication", true);
+      return;
+    }
+    this.subscribeStates("devices.*");
+    await this.pollApi();
   }
-  /**
-   * Is called when adapter shuts down - callback has to be called under any circumstances!
-   *
-   * @param callback - Callback function
-   */
   onUnload(callback) {
     try {
+      if (this.pollTimer) {
+        clearTimeout(this.pollTimer);
+        this.pollTimer = void 0;
+      }
       callback();
     } catch (error) {
       this.log.error(`Error during unloading: ${error.message}`);
       callback();
     }
   }
-  // If you need to react to object changes, uncomment the following block and the corresponding line in the constructor.
-  // You also need to subscribe to the objects with `this.subscribeObjects`, similar to `this.subscribeStates`.
-  // /**
-  //  * Is called if a subscribed object changes
-  //  */
-  // private onObjectChange(id: string, obj: ioBroker.Object | null | undefined): void {
-  //     if (obj) {
-  //         // The object was changed
-  //         this.log.info(`object ${id} changed: ${JSON.stringify(obj)}`);
-  //     } else {
-  //         // The object was deleted
-  //         this.log.info(`object ${id} deleted`);
-  //     }
-  // }
-  /**
-   * Is called if a subscribed state changes
-   *
-   * @param id - State ID
-   * @param state - State object
-   */
-  onStateChange(id, state) {
-    if (state) {
-      this.log.info(`state ${id} changed: ${state.val} (ack = ${state.ack})`);
-      if (state.ack === false) {
-        this.log.info(`User command received for ${id}: ${state.val}`);
+  async onStateChange(id, state) {
+    if (!state || state.ack) {
+      return;
+    }
+    const stateId = id.replace(`${this.namespace}.`, "");
+    try {
+      if (this.deviceModes.has(stateId)) {
+        this.ensureWriteLockElapsed(stateId);
+        await this.handleModeWrite(stateId, state.val);
+        this.lastSuccessfulWrites.set(stateId, Date.now());
+        return;
       }
-    } else {
-      this.log.info(`state ${id} deleted`);
+      if (this.writablePoints.has(stateId)) {
+        this.ensureWriteLockElapsed(stateId);
+        await this.handlePointWrite(stateId, state.val);
+        this.lastSuccessfulWrites.set(stateId, Date.now());
+        return;
+      }
+      this.log.debug(`Ignoring unsupported write to ${stateId}`);
+    } catch (error) {
+      const message = error.message;
+      this.log.error(`Failed to process write for ${stateId}: ${message}`);
+      await this.setState("info.lastError", message, true);
+      await this.refreshSingleState(stateId);
     }
   }
-  // If you need to accept messages in your adapter, uncomment the following block and the corresponding line in the constructor.
-  // /**
-  //  * Some message was sent to this instance over message box. Used by email, pushover, text2speech, ...
-  //  * Using this method requires "common.messagebox" property to be set to true in io-package.json
-  //  */
-  //
-  // private onMessage(obj: ioBroker.Message): void {
-  //     if (typeof obj === "object" && obj.message) {
-  //         if (obj.command === "send") {
-  //             // e.g. send email or pushover or whatever
-  //             this.log.info("send command");
-  //             // Send response in callback if required
-  //             if (obj.callback) this.sendTo(obj.from, obj.command, "Message received", obj.callback);
-  //         }
-  //     }
-  // }
+  scheduleNextPoll() {
+    if (this.pollTimer) {
+      clearTimeout(this.pollTimer);
+    }
+    const intervalSeconds = Math.max(Number(this.config.pollInterval) || 30, 5);
+    this.pollTimer = this.setTimeout(() => {
+      void this.pollApi();
+    }, intervalSeconds * 1e3);
+  }
+  async pollApi() {
+    var _a, _b, _c;
+    if (this.pollInProgress) {
+      this.log.debug("Polling still running, skipping this cycle");
+      this.scheduleNextPoll();
+      return;
+    }
+    this.pollInProgress = true;
+    const pollStartedAt = Date.now();
+    try {
+      const devicesRequestStartedAt = Date.now();
+      const devicesResponse = await this.apiRequest({ path: "/api/v1/devices" });
+      const devicesResponseDurationMs = Date.now() - devicesRequestStartedAt;
+      const devices = this.filterConfiguredDevices((_a = devicesResponse.devices) != null ? _a : []);
+      this.log.debug(
+        `Poll devices response in ${devicesResponseDurationMs}ms, ${devices.length} device(s) selected from ${(_c = (_b = devicesResponse.devices) == null ? void 0 : _b.length) != null ? _c : 0}`
+      );
+      for (const device of devices) {
+        await this.syncDevice(device);
+      }
+      await this.setState("info.connection", true, true);
+      await this.setState("info.lastSync", (/* @__PURE__ */ new Date()).toISOString(), true);
+      await this.setState("info.lastError", "", true);
+    } catch (error) {
+      const message = error.message;
+      this.log.error(`Polling failed: ${message}`);
+      await this.setState("info.connection", false, true);
+      await this.setState("info.lastError", message, true);
+    } finally {
+      this.log.debug(`Poll cycle finished in ${Date.now() - pollStartedAt}ms`);
+      this.pollInProgress = false;
+      this.scheduleNextPoll();
+    }
+  }
+  filterConfiguredDevices(devices) {
+    var _a;
+    const configuredIds = (_a = this.config.deviceIds) == null ? void 0 : _a.split(",").map((id) => id.trim()).filter(Boolean);
+    if (!(configuredIds == null ? void 0 : configuredIds.length)) {
+      return devices;
+    }
+    const configuredSet = new Set(configuredIds);
+    return devices.filter(
+      (device) => configuredSet.has(String(device.deviceIndex)) || configuredSet.has(device.product.serialNumber)
+    );
+  }
+  async syncDevice(device) {
+    const deviceId = device.product.serialNumber || String(device.deviceIndex);
+    const devicePath = `devices.${this.sanitizeSegment(deviceId)}`;
+    const syncStartedAt = Date.now();
+    await this.ensureDeviceObjects(devicePath);
+    await this.syncDeviceSummary(devicePath, deviceId, device);
+    await this.syncPoints(devicePath, deviceId);
+    if (this.config.fetchNotifications) {
+      await this.syncNotifications(devicePath, deviceId);
+    }
+    this.log.debug(`Poll device ${deviceId} synchronized in ${Date.now() - syncStartedAt}ms`);
+  }
+  async ensureDeviceObjects(devicePath) {
+    await this.setObjectNotExistsAsync(devicePath, {
+      type: "channel",
+      common: { name: "Device" },
+      native: {}
+    });
+    await this.setObjectNotExistsAsync(`${devicePath}.product`, {
+      type: "channel",
+      common: { name: "Product" },
+      native: {}
+    });
+    await this.setObjectNotExistsAsync(`${devicePath}.points`, {
+      type: "channel",
+      common: { name: "Points" },
+      native: {}
+    });
+    await this.setObjectNotExistsAsync(`${devicePath}.points.readOnly`, {
+      type: "channel",
+      common: { name: "Read-only points" },
+      native: {}
+    });
+    await this.setObjectNotExistsAsync(`${devicePath}.points.writable`, {
+      type: "channel",
+      common: { name: "Writable points" },
+      native: {}
+    });
+    await this.setObjectNotExistsAsync(`${devicePath}.notifications`, {
+      type: "channel",
+      common: { name: "Notifications" },
+      native: {}
+    });
+  }
+  async syncDeviceSummary(devicePath, deviceId, device) {
+    await this.upsertState(`${devicePath}.deviceIndex`, {
+      name: "Device index",
+      role: "value",
+      type: "number",
+      read: true,
+      write: false
+    });
+    await this.upsertState(`${devicePath}.aidMode`, {
+      name: "Aid mode",
+      role: "state",
+      type: "string",
+      read: true,
+      write: true,
+      states: {
+        off: "off",
+        on: "on"
+      }
+    });
+    await this.upsertState(`${devicePath}.smartMode`, {
+      name: "Smart mode",
+      role: "state",
+      type: "string",
+      read: true,
+      write: true,
+      states: {
+        normal: "normal",
+        away: "away"
+      }
+    });
+    await this.upsertState(`${devicePath}.product.serialNumber`, {
+      name: "Serial number",
+      role: "text",
+      type: "string",
+      read: true,
+      write: false
+    });
+    await this.upsertState(`${devicePath}.product.name`, {
+      name: "Name",
+      role: "text",
+      type: "string",
+      read: true,
+      write: false
+    });
+    await this.upsertState(`${devicePath}.product.manufacturer`, {
+      name: "Manufacturer",
+      role: "text",
+      type: "string",
+      read: true,
+      write: false
+    });
+    await this.upsertState(`${devicePath}.product.firmwareId`, {
+      name: "Firmware ID",
+      role: "text",
+      type: "string",
+      read: true,
+      write: false
+    });
+    this.deviceModes.set(`${devicePath}.aidMode`, { deviceId, kind: "aidMode" });
+    this.deviceModes.set(`${devicePath}.smartMode`, { deviceId, kind: "smartMode" });
+    await this.setState(`${devicePath}.deviceIndex`, device.deviceIndex, true);
+    await this.setState(`${devicePath}.aidMode`, device.aidMode, true);
+    await this.setState(`${devicePath}.smartMode`, device.smartMode, true);
+    await this.setState(`${devicePath}.product.serialNumber`, device.product.serialNumber, true);
+    await this.setState(`${devicePath}.product.name`, device.product.name, true);
+    await this.setState(`${devicePath}.product.manufacturer`, device.product.manufacturer, true);
+    await this.setState(`${devicePath}.product.firmwareId`, device.product.firmwareId, true);
+  }
+  async syncPoints(devicePath, deviceId) {
+    var _a, _b;
+    const pointsRequestStartedAt = Date.now();
+    const points = await this.apiRequest({
+      path: `/api/v1/devices/${encodeURIComponent(deviceId)}/points`
+    });
+    const pointsResponseDurationMs = Date.now() - pointsRequestStartedAt;
+    const pointsPreparationStartedAt = Date.now();
+    let skippedPoints = 0;
+    const normalizedPoints = [];
+    for (const [pointKey, rawPoint] of Object.entries(points)) {
+      const pointId = Number(pointKey);
+      if (!Number.isFinite(pointId)) {
+        continue;
+      }
+      const point = this.normalizePointValue(rawPoint, pointId);
+      if (!this.isValidPointValue(point)) {
+        skippedPoints++;
+        this.logUnknownPointShapeOnce(deviceId, pointId, rawPoint);
+        continue;
+      }
+      normalizedPoints.push({ pointId, point });
+    }
+    const pointNameCounts = /* @__PURE__ */ new Map();
+    for (const { point } of normalizedPoints) {
+      const pointGroup = point.metadata.isWritable ? "writable" : "readOnly";
+      const baseName = this.getPointStateBaseName(point.title);
+      const countKey = `${pointGroup}:${baseName}`;
+      pointNameCounts.set(countKey, ((_a = pointNameCounts.get(countKey)) != null ? _a : 0) + 1);
+    }
+    for (const { pointId, point } of normalizedPoints) {
+      const pointGroupPath = point.metadata.isWritable ? `${devicePath}.points.writable` : `${devicePath}.points.readOnly`;
+      const baseName = this.getPointStateBaseName(point.title);
+      const countKey = `${point.metadata.isWritable ? "writable" : "readOnly"}:${baseName}`;
+      const pointStateId = ((_b = pointNameCounts.get(countKey)) != null ? _b : 0) > 1 ? `${baseName}_${pointId}` : baseName;
+      const pointPath = `${pointGroupPath}.${pointStateId}`;
+      await this.upsertState(pointPath, {
+        name: point.title || `Point ${pointId}`,
+        role: this.determinePointRole(point.metadata),
+        type: this.determineIoBrokerType(point.metadata),
+        read: true,
+        write: point.metadata.isWritable,
+        unit: point.metadata.shortUnit || point.metadata.unit || void 0,
+        desc: this.buildPointDescription(point.description, pointId),
+        native: {
+          pointId,
+          deviceId,
+          title: point.title,
+          isWritable: point.metadata.isWritable,
+          variableId: point.metadata.variableId
+        }
+      });
+      if (point.metadata.isWritable) {
+        this.writablePoints.set(pointPath, {
+          deviceId,
+          pointId,
+          metadata: point.metadata
+        });
+      } else {
+        this.writablePoints.delete(pointPath);
+      }
+      await this.setState(pointPath, {
+        val: this.convertPointToStateValue(point),
+        ack: true,
+        q: point.datavalue.isOk ? 0 : 1
+      });
+    }
+    if (skippedPoints > 0) {
+      this.log.debug(`Skipped ${skippedPoints} invalid points on device ${deviceId}`);
+    }
+    this.log.debug(
+      `Poll points for device ${deviceId}: response ${pointsResponseDurationMs}ms, preparation ${Date.now() - pointsPreparationStartedAt}ms, ${normalizedPoints.length} point(s)`
+    );
+  }
+  async syncNotifications(devicePath, deviceId) {
+    const notificationsRequestStartedAt = Date.now();
+    const notifications = await this.apiRequest({
+      path: `/api/v1/devices/${encodeURIComponent(deviceId)}/notifications`
+    });
+    const notificationsResponseDurationMs = Date.now() - notificationsRequestStartedAt;
+    const notificationsPreparationStartedAt = Date.now();
+    await this.upsertState(`${devicePath}.notifications.activeCount`, {
+      name: "Active notifications",
+      role: "value",
+      type: "number",
+      read: true,
+      write: false
+    });
+    await this.upsertState(`${devicePath}.notifications.json`, {
+      name: "Notifications JSON",
+      role: "json",
+      type: "string",
+      read: true,
+      write: false
+    });
+    await this.setState(`${devicePath}.notifications.activeCount`, notifications.alarms.length, true);
+    await this.setState(`${devicePath}.notifications.json`, JSON.stringify(notifications.alarms), true);
+    this.log.debug(
+      `Poll notifications for device ${deviceId}: response ${notificationsResponseDurationMs}ms, preparation ${Date.now() - notificationsPreparationStartedAt}ms, ${notifications.alarms.length} alarm(s)`
+    );
+  }
+  async handleModeWrite(stateId, value) {
+    const descriptor = this.deviceModes.get(stateId);
+    if (!descriptor) {
+      return;
+    }
+    const normalizedValue = String(value);
+    const path = descriptor.kind === "aidMode" ? `/api/v1/devices/${encodeURIComponent(descriptor.deviceId)}/aidmode` : `/api/v1/devices/${encodeURIComponent(descriptor.deviceId)}/smartmode`;
+    const body = descriptor.kind === "aidMode" ? { aidMode: normalizedValue } : { smartMode: normalizedValue };
+    this.log.debug(`Writing mode ${stateId} via ${path} with payload: ${this.formatUnknownForLog(body)}`);
+    const response = await this.apiRequest({ method: "POST", path, body });
+    this.log.debug(`Write response for mode ${stateId}: ${this.formatUnknownForLog(response)}`);
+    await this.setState(stateId, normalizedValue, true);
+    await this.pollApi();
+  }
+  async handlePointWrite(stateId, value) {
+    const descriptor = this.writablePoints.get(stateId);
+    if (!descriptor) {
+      return;
+    }
+    const payload = {
+      type: "datavalue",
+      isOk: true,
+      variableId: descriptor.pointId
+    };
+    if (descriptor.metadata.variableType === "binary") {
+      payload.integerValue = value ? 1 : 0;
+    } else if (this.isStringLikeType(descriptor.metadata.variableType)) {
+      payload.stringValue = value == null ? "" : String(value);
+    } else {
+      payload.integerValue = this.scalePointWriteValue(value, descriptor.metadata);
+    }
+    this.log.debug(
+      `Writing point ${stateId} (${descriptor.pointId}) with payload: ${this.formatUnknownForLog(payload)}`
+    );
+    const result = await this.apiRequest({
+      method: "PATCH",
+      path: `/api/v1/devices/${encodeURIComponent(descriptor.deviceId)}/points`,
+      body: [payload]
+    });
+    this.log.debug(
+      `Write response for point ${stateId} (${descriptor.pointId}): ${this.formatUnknownForLog(result)}`
+    );
+    const resultValue = result[String(descriptor.pointId)];
+    if (!this.isAcceptedPointWriteResult(resultValue, descriptor.pointId)) {
+      throw new Error(`API rejected point ${descriptor.pointId}: ${this.formatApiResultValue(resultValue)}`);
+    }
+    const updatedPoint = this.extractWritablePointFromWriteResult(resultValue, descriptor.pointId);
+    if (updatedPoint) {
+      await this.setState(stateId, {
+        val: this.convertPointToStateValue(updatedPoint),
+        ack: true,
+        q: updatedPoint.datavalue.isOk ? 0 : 1
+      });
+      return;
+    }
+    await this.refreshSingleState(stateId);
+  }
+  async refreshSingleState(stateId) {
+    const pointDescriptor = this.writablePoints.get(stateId);
+    if (pointDescriptor) {
+      const response = await this.apiRequest({
+        path: `/api/v1/devices/${encodeURIComponent(pointDescriptor.deviceId)}/points/${pointDescriptor.pointId}`
+      });
+      const point = this.extractPointValue(response, pointDescriptor.pointId);
+      if (!this.isValidPointValue(point)) {
+        throw new Error(`Point ${pointDescriptor.pointId} has no metadata or datavalue`);
+      }
+      await this.setState(stateId, this.convertPointToStateValue(point), true);
+      return;
+    }
+    const deviceDescriptor = this.deviceModes.get(stateId);
+    if (deviceDescriptor) {
+      const device = await this.apiRequest({
+        path: `/api/v1/devices/${encodeURIComponent(deviceDescriptor.deviceId)}`
+      });
+      const value = deviceDescriptor.kind === "aidMode" ? device.aidMode : device.smartMode;
+      await this.setState(stateId, value, true);
+    }
+  }
+  convertPointToStateValue(point) {
+    var _a;
+    const { metadata, datavalue } = point;
+    if (!datavalue) {
+      return null;
+    }
+    if (metadata.variableType === "binary") {
+      return Boolean(datavalue.integerValue);
+    }
+    if (this.isStringLikeType(metadata.variableType)) {
+      return (_a = datavalue.stringValue) != null ? _a : "";
+    }
+    if (typeof datavalue.integerValue === "number") {
+      return this.scalePointReadValue(datavalue.integerValue, metadata);
+    }
+    if (typeof datavalue.stringValue === "string") {
+      return datavalue.stringValue;
+    }
+    return null;
+  }
+  determineIoBrokerType(metadata) {
+    if (metadata.variableType === "binary") {
+      return "boolean";
+    }
+    if (this.isStringLikeType(metadata.variableType)) {
+      return "string";
+    }
+    return "number";
+  }
+  determinePointRole(metadata) {
+    if (metadata.variableType === "binary") {
+      return metadata.isWritable ? "switch" : "indicator";
+    }
+    if (metadata.variableType === "string" || metadata.variableType === "date" || metadata.variableType === "time") {
+      return "text";
+    }
+    if (metadata.shortUnit === "\xB0C" || metadata.unit === "\xB0C") {
+      return "value.temperature";
+    }
+    return "value";
+  }
+  scalePointReadValue(integerValue, metadata) {
+    const divisor = metadata.divisor || 1;
+    return integerValue / divisor;
+  }
+  scalePointWriteValue(value, metadata) {
+    const numericValue = typeof value === "number" ? value : Number(value);
+    if (!Number.isFinite(numericValue)) {
+      throw new Error(`Invalid numeric value: ${value}`);
+    }
+    const divisor = metadata.divisor || 1;
+    return Math.round(numericValue * divisor);
+  }
+  isStringLikeType(variableType) {
+    return variableType === "string" || variableType === "time" || variableType === "date" || variableType === "unknown";
+  }
+  ensureWriteLockElapsed(stateId) {
+    const lockIntervalMs = this.getWriteLockIntervalMs();
+    if (lockIntervalMs <= 0) {
+      return;
+    }
+    const lastWrite = this.lastSuccessfulWrites.get(stateId);
+    if (!lastWrite) {
+      return;
+    }
+    const now = Date.now();
+    const elapsedMs = now - lastWrite;
+    if (elapsedMs >= lockIntervalMs) {
+      return;
+    }
+    const remainingSeconds = Math.ceil((lockIntervalMs - elapsedMs) / 1e3);
+    throw new Error(`Write lock active for ${stateId}. Try again in ${remainingSeconds}s`);
+  }
+  getWriteLockIntervalMs() {
+    const lockIntervalSeconds = Math.max(Number(this.config.writeLockInterval) || 120, 0);
+    return lockIntervalSeconds * 1e3;
+  }
+  getAuthorizationHeaderValue() {
+    var _a, _b, _c, _d, _e;
+    if ((_a = this.config.basicAuth) == null ? void 0 : _a.trim()) {
+      return `Basic ${this.config.basicAuth.trim()}`;
+    }
+    if (!((_b = this.config.username) == null ? void 0 : _b.trim()) && !((_c = this.config.password) == null ? void 0 : _c.trim())) {
+      return void 0;
+    }
+    const token = import_node_buffer.Buffer.from(`${(_d = this.config.username) != null ? _d : ""}:${(_e = this.config.password) != null ? _e : ""}`).toString("base64");
+    return `Basic ${token}`;
+  }
+  async apiRequest(options) {
+    var _a;
+    const baseUrl = new URL(this.config.baseUrl);
+    const requestPath = new URL(options.path, `${baseUrl.origin}/`);
+    const body = options.body == null ? void 0 : JSON.stringify(options.body);
+    const headers = {
+      Accept: "application/json",
+      Authorization: (_a = this.getAuthorizationHeaderValue()) != null ? _a : ""
+    };
+    if (body) {
+      headers["Content-Type"] = "application/json";
+      headers["Content-Length"] = import_node_buffer.Buffer.byteLength(body).toString();
+    }
+    return await new Promise((resolve, reject) => {
+      var _a2;
+      const request = https.request(
+        {
+          protocol: requestPath.protocol,
+          hostname: requestPath.hostname,
+          port: requestPath.port,
+          path: `${requestPath.pathname}${requestPath.search}`,
+          method: (_a2 = options.method) != null ? _a2 : "GET",
+          headers,
+          agent: new https.Agent({
+            rejectUnauthorized: !this.config.ignoreTlsErrors
+          })
+        },
+        (response) => {
+          let rawData = "";
+          response.setEncoding("utf8");
+          response.on("data", (chunk) => {
+            rawData += chunk;
+          });
+          response.on("end", () => {
+            var _a3;
+            const statusCode = (_a3 = response.statusCode) != null ? _a3 : 500;
+            if (statusCode < 200 || statusCode >= 300) {
+              let message = `HTTP ${statusCode}`;
+              try {
+                const parsed = rawData ? JSON.parse(rawData) : void 0;
+                if (parsed == null ? void 0 : parsed.error) {
+                  message = parsed.error;
+                }
+              } catch {
+                if (rawData) {
+                  message = rawData;
+                }
+              }
+              reject(new Error(message));
+              return;
+            }
+            if (!rawData) {
+              resolve(void 0);
+              return;
+            }
+            try {
+              resolve(JSON.parse(rawData));
+            } catch {
+              resolve(rawData);
+            }
+          });
+        }
+      );
+      request.on("error", reject);
+      if (body) {
+        request.write(body);
+      }
+      request.end();
+    });
+  }
+  extractPointValue(response, pointId) {
+    const directPoint = this.normalizePointValue(response, pointId);
+    if (directPoint) {
+      return directPoint;
+    }
+    if (this.isRecord(response)) {
+      const nestedPoint = this.normalizePointValue(response[String(pointId)], pointId);
+      if (nestedPoint) {
+        return nestedPoint;
+      }
+    }
+    throw new Error(`Point ${pointId} not found in API response`);
+  }
+  isValidPointValue(point) {
+    return !!(point == null ? void 0 : point.metadata) && !!point.datavalue;
+  }
+  normalizePointValue(rawPoint, pointId) {
+    var _a, _b;
+    const candidates = this.collectPointCandidates(rawPoint, pointId);
+    for (const candidate of candidates) {
+      const metadata = this.extractMetadata(candidate);
+      const datavalue = this.extractDataValue(candidate);
+      if (!metadata || !datavalue) {
+        continue;
+      }
+      return {
+        title: (_a = this.readString(candidate.title)) != null ? _a : `Point ${pointId}`,
+        description: (_b = this.readString(candidate.description)) != null ? _b : "",
+        metadata,
+        datavalue
+      };
+    }
+    return void 0;
+  }
+  collectPointCandidates(rawPoint, pointId) {
+    if (!this.isRecord(rawPoint)) {
+      return [];
+    }
+    const candidates = [rawPoint];
+    const nestedByPointId = rawPoint[String(pointId)];
+    if (this.isRecord(nestedByPointId)) {
+      candidates.push(nestedByPointId);
+    }
+    for (const value of Object.values(rawPoint)) {
+      if (this.isRecord(value)) {
+        candidates.push(value);
+      }
+    }
+    return candidates;
+  }
+  extractMetadata(candidate) {
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k, _l, _m, _n, _o;
+    const metadataCandidate = this.isRecord(candidate.metadata) ? candidate.metadata : candidate;
+    if (!this.readString(metadataCandidate.variableType)) {
+      return void 0;
+    }
+    return {
+      type: "metadata",
+      variableId: (_a = this.readNumber(metadataCandidate.variableId)) != null ? _a : 0,
+      variableType: (_b = this.readString(metadataCandidate.variableType)) != null ? _b : "unknown",
+      variableSize: (_c = this.readString(metadataCandidate.variableSize)) != null ? _c : "",
+      unit: (_d = this.readString(metadataCandidate.unit)) != null ? _d : "",
+      modbusRegisterType: (_e = this.readString(metadataCandidate.modbusRegisterType)) != null ? _e : "",
+      shortUnit: (_f = this.readString(metadataCandidate.shortUnit)) != null ? _f : "",
+      isWritable: (_g = this.readBoolean(metadataCandidate.isWritable)) != null ? _g : false,
+      divisor: (_h = this.readNumber(metadataCandidate.divisor)) != null ? _h : 1,
+      decimal: (_i = this.readNumber(metadataCandidate.decimal)) != null ? _i : 0,
+      modbusRegisterID: (_j = this.readNumber(metadataCandidate.modbusRegisterID)) != null ? _j : 0,
+      minValue: (_k = this.readNumber(metadataCandidate.minValue)) != null ? _k : 0,
+      maxValue: (_l = this.readNumber(metadataCandidate.maxValue)) != null ? _l : 0,
+      intDefaultValue: (_m = this.readNumber(metadataCandidate.intDefaultValue)) != null ? _m : 0,
+      change: (_n = this.readNumber(metadataCandidate.change)) != null ? _n : 0,
+      stringDefaultValue: (_o = this.readString(metadataCandidate.stringDefaultValue)) != null ? _o : ""
+    };
+  }
+  extractDataValue(candidate) {
+    var _a, _b;
+    const explicitDataValue = this.isRecord(candidate.datavalue) ? candidate.datavalue : this.isRecord(candidate.dataValue) ? candidate.dataValue : this.isRecord(candidate.value) ? candidate.value : void 0;
+    const dataValueCandidate = explicitDataValue || (typeof candidate.integerValue === "number" || typeof candidate.stringValue === "string" ? candidate : void 0);
+    if (!dataValueCandidate) {
+      return void 0;
+    }
+    const integerValue = this.readNumber(dataValueCandidate.integerValue);
+    const stringValue = this.readString(dataValueCandidate.stringValue);
+    if (integerValue === void 0 && stringValue === void 0) {
+      return void 0;
+    }
+    return {
+      type: "datavalue",
+      isOk: (_a = this.readBoolean(dataValueCandidate.isOk)) != null ? _a : false,
+      variableId: (_b = this.readNumber(dataValueCandidate.variableId)) != null ? _b : 0,
+      integerValue,
+      stringValue
+    };
+  }
+  logUnknownPointShapeOnce(deviceId, pointId, rawPoint) {
+    const logKey = `${deviceId}:${pointId}`;
+    if (this.loggedUnknownPointShapes.has(logKey)) {
+      return;
+    }
+    this.loggedUnknownPointShapes.add(logKey);
+    let serialized = "";
+    try {
+      serialized = JSON.stringify(rawPoint);
+    } catch {
+      serialized = String(rawPoint);
+    }
+    this.log.debug(
+      `Skipping point ${pointId} on device ${deviceId} because metadata or datavalue is missing. Raw sample: ${serialized.slice(0, 300)}`
+    );
+  }
+  isRecord(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+  }
+  readString(value) {
+    return typeof value === "string" ? value : void 0;
+  }
+  readNumber(value) {
+    return typeof value === "number" && Number.isFinite(value) ? value : void 0;
+  }
+  readBoolean(value) {
+    return typeof value === "boolean" ? value : void 0;
+  }
+  getPointStateBaseName(title) {
+    const sanitizedTitle = this.normalizeTitleForStateId(title).replace(/\s+/g, "_").replace(/[^a-zA-Z0-9_-]+/g, "_").replace(/_+/g, "_").replace(/^_+|_+$/g, "");
+    return sanitizedTitle || "point";
+  }
+  normalizeTitleForStateId(title) {
+    return title.normalize("NFKD").replace(INVISIBLE_WORD_JOINERS, "").replace(COMBINING_MARKS, "").replace(/[^a-zA-Z0-9_-]+/g, "_").replace(/_+/g, "_").replace(/^_+|_+$/g, "");
+  }
+  buildPointDescription(description, pointId) {
+    const trimmedDescription = description.trim();
+    return trimmedDescription ? `${trimmedDescription}
+Point ID: ${pointId}` : `Point ID: ${pointId}`;
+  }
+  sanitizeSegment(value) {
+    return value.replace(this.FORBIDDEN_CHARS, "_");
+  }
+  formatApiResultValue(value) {
+    if (typeof value === "string") {
+      return value;
+    }
+    if (value == null) {
+      return "null";
+    }
+    if (typeof value === "number" || typeof value === "boolean") {
+      return String(value);
+    }
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+  formatUnknownForLog(value) {
+    if (typeof value === "string") {
+      return value;
+    }
+    if (value == null) {
+      return "null";
+    }
+    if (typeof value === "number" || typeof value === "boolean") {
+      return String(value);
+    }
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+  isAcceptedPointWriteResult(value, pointId) {
+    if (value == null) {
+      return true;
+    }
+    if (value === "modified") {
+      return true;
+    }
+    if (!this.isRecord(value)) {
+      return false;
+    }
+    return this.isValidPointValue(this.normalizePointValue(value, pointId));
+  }
+  extractWritablePointFromWriteResult(value, pointId) {
+    if (!this.isRecord(value)) {
+      return void 0;
+    }
+    const point = this.normalizePointValue(value, pointId);
+    return this.isValidPointValue(point) ? point : void 0;
+  }
+  async upsertState(id, common) {
+    var _a, _b, _c, _d, _e, _f;
+    await this.extendObjectAsync(id, {
+      type: "state",
+      common: {
+        name: (_a = common.name) != null ? _a : id,
+        type: (_b = common.type) != null ? _b : "string",
+        role: (_c = common.role) != null ? _c : "state",
+        read: (_d = common.read) != null ? _d : true,
+        write: (_e = common.write) != null ? _e : false,
+        unit: common.unit,
+        desc: common.desc,
+        min: common.min,
+        max: common.max,
+        states: common.states
+      },
+      native: (_f = common.native) != null ? _f : {}
+    });
+  }
 }
 if (require.main !== module) {
   module.exports = (options) => new NibeRestApi(options);
 } else {
   (() => new NibeRestApi())();
 }
+// Annotate the CommonJS export names for ESM import in node:
+0 && (module.exports = {
+  NibeRestApi
+});
 //# sourceMappingURL=main.js.map

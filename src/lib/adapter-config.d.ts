@@ -4,8 +4,15 @@
 declare global {
     namespace ioBroker {
         interface AdapterConfig {
-            option1: boolean;
-            option2: string;
+            baseUrl: string;
+            username: string;
+            password: string;
+            basicAuth: string;
+            pollInterval: number;
+            writeLockInterval: number;
+            deviceIds: string;
+            ignoreTlsErrors: boolean;
+            fetchNotifications: boolean;
         }
     }
 }

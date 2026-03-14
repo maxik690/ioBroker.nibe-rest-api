@@ -1,5 +1,18 @@
 {
     "nibe-rest-api adapter settings": "nibe-rest-api的适配器设置",
-    "option1": "选项1",
-    "option2": "选项2"
+    "Base URL": "基础 URL",
+    "Example: https://192.168.2.107:8443": "示例：https://192.168.2.107:8443",
+    "Username": "用户名",
+    "Password": "密码",
+    "Basic auth hash": "Basic 认证哈希",
+    "Optional. If set, this value is sent after 'Basic '. Username/password are then ignored.": "可选。如果设置了该值，它会在 'Basic ' 之后发送。用户名和密码将被忽略。",
+    "Poll interval (seconds)": "轮询间隔（秒）",
+    "Write lock interval (seconds)": "写入锁定间隔（秒）",
+    "Minimum time between two writes to the same state. Set to 0 to disable.": "对同一状态两次写入之间的最短时间。设置为 0 可禁用。",
+    "Device IDs": "设备 ID",
+    "Optional comma-separated list. Empty = all devices returned by the API.": "可选的逗号分隔列表。留空 = API 返回的所有设备。",
+    "Ignore TLS certificate errors": "忽略 TLS 证书错误",
+    "Useful for local/self-signed certificates.": "适用于本地或自签名证书。",
+    "Fetch notifications": "获取通知",
+    "Reads active alarms for each device during polling.": "在轮询期间读取每个设备的活动警报。"
 }

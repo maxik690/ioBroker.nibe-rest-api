@@ -1,5 +1,18 @@
 {
     "nibe-rest-api adapter settings": "Налаштування адаптера для nibe-rest-api",
-    "option1": "варіант1",
-    "option2": "варіант2"
+    "Base URL": "Базова URL-адреса",
+    "Example: https://192.168.2.107:8443": "Приклад: https://192.168.2.107:8443",
+    "Username": "Ім'я користувача",
+    "Password": "Пароль",
+    "Basic auth hash": "Хеш Basic auth",
+    "Optional. If set, this value is sent after 'Basic '. Username/password are then ignored.": "Необов'язково. Якщо задано, це значення надсилається після 'Basic '. Ім'я користувача та пароль тоді ігноруються.",
+    "Poll interval (seconds)": "Інтервал опитування (секунди)",
+    "Write lock interval (seconds)": "Інтервал блокування запису (секунди)",
+    "Minimum time between two writes to the same state. Set to 0 to disable.": "Мінімальний час між двома записами в той самий стан. Встановіть 0, щоб вимкнути.",
+    "Device IDs": "Ідентифікатори пристроїв",
+    "Optional comma-separated list. Empty = all devices returned by the API.": "Необов'язковий список, розділений комами. Порожньо = усі пристрої, повернуті API.",
+    "Ignore TLS certificate errors": "Ігнорувати помилки TLS-сертифіката",
+    "Useful for local/self-signed certificates.": "Корисно для локальних або самопідписаних сертифікатів.",
+    "Fetch notifications": "Отримувати сповіщення",
+    "Reads active alarms for each device during polling.": "Зчитує активні тривоги для кожного пристрою під час опитування."
 }

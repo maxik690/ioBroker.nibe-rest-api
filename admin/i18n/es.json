@@ -1,5 +1,18 @@
 {
     "nibe-rest-api adapter settings": "Ajustes del adaptador para nibe-rest-api",
-    "option1": "opción1",
-    "option2": "opción2"
+    "Base URL": "URL base",
+    "Example: https://192.168.2.107:8443": "Ejemplo: https://192.168.2.107:8443",
+    "Username": "Nombre de usuario",
+    "Password": "Contraseña",
+    "Basic auth hash": "Hash de autenticación básica",
+    "Optional. If set, this value is sent after 'Basic '. Username/password are then ignored.": "Opcional. Si se establece, este valor se envía después de 'Basic '. Entonces se ignoran el nombre de usuario y la contraseña.",
+    "Poll interval (seconds)": "Intervalo de sondeo (segundos)",
+    "Write lock interval (seconds)": "Intervalo de bloqueo de escritura (segundos)",
+    "Minimum time between two writes to the same state. Set to 0 to disable.": "Tiempo mínimo entre dos escrituras en el mismo estado. Ponga 0 para desactivarlo.",
+    "Device IDs": "ID de dispositivos",
+    "Optional comma-separated list. Empty = all devices returned by the API.": "Lista opcional separada por comas. Vacío = todos los dispositivos devueltos por la API.",
+    "Ignore TLS certificate errors": "Ignorar errores de certificados TLS",
+    "Useful for local/self-signed certificates.": "Útil para certificados locales o autofirmados.",
+    "Fetch notifications": "Obtener notificaciones",
+    "Reads active alarms for each device during polling.": "Lee las alarmas activas de cada dispositivo durante el sondeo."
 }

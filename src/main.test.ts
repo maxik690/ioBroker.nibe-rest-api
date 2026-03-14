@@ -1,24 +1,27 @@
-/**
- * This is a dummy TypeScript test file using chai and mocha
- *
- * It's automatically excluded from npm and its build output is excluded from both git and npm.
- * It is advised to test all your modules with accompanying *.test.ts-files
- */
-
 import { expect } from "chai";
-// import { functionToTest } from "./moduleToTest";
+import { NibeRestApi } from "./main";
 
-describe("module to test => function to test", () => {
-    // initializing logic
-    const expected = 5;
+describe("point state id normalization", () => {
+    const adapter = new NibeRestApi({ name: "nibe-rest-api-test" });
 
-    it(`should return ${expected}`, () => {
-        const result = 5;
-        // assign result a value from functionToTest
-        expect(result).to.equal(expected);
-        // or using the should() syntax
-        result.should.equal(expected);
+    after(() => {
+        adapter.removeAllListeners();
     });
-    // ... more tests => it
+
+    it("removes invisible separators inside words", () => {
+        const softHyphenTitle = `Com${String.fromCharCode(0x00ad)}pressor fre${String.fromCharCode(0x00ad)}quency`;
+        const stateId = (adapter as unknown as { getPointStateBaseName: (title: string) => string }).getPointStateBaseName(
+            softHyphenTitle,
+        );
+
+        expect(stateId).to.equal("Compressor_frequency");
+    });
+
+    it("strips accents while keeping readable ids", () => {
+        const stateId = (adapter as unknown as { getPointStateBaseName: (title: string) => string }).getPointStateBaseName(
+            "Värmebärare temperatur",
+        );
+
+        expect(stateId).to.equal("Varmebarare_temperatur");
+    });
 });
-// ... more test suites => describe
