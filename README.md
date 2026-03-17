@@ -1,4 +1,4 @@
-![Logo](admin/nibe-rest-api.png)
+![Logo](admin/nibe-rest-api-wide.png)
 
 # ioBroker.nibe-rest-api
 
