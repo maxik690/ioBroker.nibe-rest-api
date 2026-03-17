@@ -8,7 +8,7 @@
     "Optional. If set, this value is sent after 'Basic '. Username/password are then ignored.": "Необов'язково. Якщо задано, це значення надсилається після 'Basic '. Ім'я користувача та пароль тоді ігноруються.",
     "Poll interval (seconds)": "Інтервал опитування (секунди)",
     "Write lock interval (seconds)": "Інтервал блокування запису (секунди)",
-    "Minimum time between two writes to the same state. Set to 0 to disable.": "Мінімальний час між двома записами в той самий стан. Встановіть 0, щоб вимкнути.",
+    "Minimum time between two writes to the same state. Recommended to avoid too many writes, which could damage the device EEPROM. Set to 0 to disable.": "Minimalniy chas mizh dvoma zapisami v toy samiy stan. Rekomendovano, shchob uniknuti zanadto bagatokh zapisiv, yaki mozhut poshkoditi EEPROM pristroyu. Vstanovit 0, shchob vimknuti.",
     "Device IDs": "Ідентифікатори пристроїв",
     "Optional comma-separated list. Empty = all devices returned by the API.": "Необов'язковий список, розділений комами. Порожньо = усі пристрої, повернуті API.",
     "Ignore TLS certificate errors": "Ігнорувати помилки TLS-сертифіката",

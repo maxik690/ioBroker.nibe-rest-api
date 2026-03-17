@@ -8,7 +8,7 @@
     "Optional. If set, this value is sent after 'Basic '. Username/password are then ignored.": "可选。如果设置了该值，它会在 'Basic ' 之后发送。用户名和密码将被忽略。",
     "Poll interval (seconds)": "轮询间隔（秒）",
     "Write lock interval (seconds)": "写入锁定间隔（秒）",
-    "Minimum time between two writes to the same state. Set to 0 to disable.": "对同一状态两次写入之间的最短时间。设置为 0 可禁用。",
+    "Minimum time between two writes to the same state. Recommended to avoid too many writes, which could damage the device EEPROM. Set to 0 to disable.": "对同一状态两次写入之间的最短时间。建议使用此值以避免过多写入，因为这可能会损坏设备的 EEPROM。设置为 0 可禁用。",
     "Device IDs": "设备 ID",
     "Optional comma-separated list. Empty = all devices returned by the API.": "可选的逗号分隔列表。留空 = API 返回的所有设备。",
     "Ignore TLS certificate errors": "忽略 TLS 证书错误",

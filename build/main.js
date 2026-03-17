@@ -34,7 +34,7 @@ module.exports = __toCommonJS(main_exports);
 var utils = __toESM(require("@iobroker/adapter-core"));
 var import_node_buffer = require("node:buffer");
 var https = __toESM(require("node:https"));
-const INVISIBLE_WORD_JOINERS = /[\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180B-\u180D\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFE00-\uFE0F\uFEFF]/g;
+const INVISIBLE_WORD_JOINERS = /\u00AD|\u034F|\u061C|\u115F|\u1160|\u17B4|\u17B5|\u180B|\u180C|\u180D|\u200B|\u200C|\u200D|\u200E|\u200F|\u202A|\u202B|\u202C|\u202D|\u202E|\u2060|\u2061|\u2062|\u2063|\u2064|\u2065|\u2066|\u2067|\u2068|\u2069|\u206A|\u206B|\u206C|\u206D|\u206E|\u206F|\uFE00|\uFE01|\uFE02|\uFE03|\uFE04|\uFE05|\uFE06|\uFE07|\uFE08|\uFE09|\uFE0A|\uFE0B|\uFE0C|\uFE0D|\uFE0E|\uFE0F|\uFEFF/gu;
 const COMBINING_MARKS = /[\u0300-\u036f]/g;
 class NibeRestApi extends utils.Adapter {
   pollTimer;
@@ -43,6 +43,13 @@ class NibeRestApi extends utils.Adapter {
   deviceModes = /* @__PURE__ */ new Map();
   loggedUnknownPointShapes = /* @__PURE__ */ new Set();
   lastSuccessfulWrites = /* @__PURE__ */ new Map();
+  objectDefinitionCache = /* @__PURE__ */ new Map();
+  stateValueCache = /* @__PURE__ */ new Map();
+  /**
+   * Creates the adapter instance with the standard ioBroker lifecycle handlers.
+   *
+   * @param options Adapter options supplied by ioBroker during startup or tests.
+   */
   constructor(options = {}) {
     super({
       ...options,
@@ -54,7 +61,7 @@ class NibeRestApi extends utils.Adapter {
   }
   async onReady() {
     var _a;
-    await this.setState("info.connection", false, true);
+    await this.setCachedStateValue("info.connection", false, true);
     await this.setObjectNotExistsAsync("info.lastSync", {
       type: "state",
       common: {
@@ -79,12 +86,12 @@ class NibeRestApi extends utils.Adapter {
     });
     if (!((_a = this.config.baseUrl) == null ? void 0 : _a.trim())) {
       this.log.error("Missing base URL. Please configure the adapter first.");
-      await this.setState("info.lastError", "Missing base URL", true);
+      await this.setCachedStateValue("info.lastError", "Missing base URL", true);
       return;
     }
     if (!this.getAuthorizationHeaderValue()) {
       this.log.error("Missing authentication. Configure username/password or a Basic auth hash.");
-      await this.setState("info.lastError", "Missing authentication", true);
+      await this.setCachedStateValue("info.lastError", "Missing authentication", true);
       return;
     }
     this.subscribeStates("devices.*");
@@ -124,7 +131,7 @@ class NibeRestApi extends utils.Adapter {
     } catch (error) {
       const message = error.message;
       this.log.error(`Failed to process write for ${stateId}: ${message}`);
-      await this.setState("info.lastError", message, true);
+      await this.setCachedStateValue("info.lastError", message, true);
       await this.refreshSingleState(stateId);
     }
   }
@@ -157,14 +164,14 @@ class NibeRestApi extends utils.Adapter {
       for (const device of devices) {
         await this.syncDevice(device);
       }
-      await this.setState("info.connection", true, true);
-      await this.setState("info.lastSync", (/* @__PURE__ */ new Date()).toISOString(), true);
-      await this.setState("info.lastError", "", true);
+      await this.setCachedStateValue("info.connection", true, true);
+      await this.setCachedStateValue("info.lastSync", (/* @__PURE__ */ new Date()).toISOString(), true);
+      await this.setCachedStateValue("info.lastError", "", true);
     } catch (error) {
       const message = error.message;
       this.log.error(`Polling failed: ${message}`);
-      await this.setState("info.connection", false, true);
-      await this.setState("info.lastError", message, true);
+      await this.setCachedStateValue("info.connection", false, true);
+      await this.setCachedStateValue("info.lastError", message, true);
     } finally {
       this.log.debug(`Poll cycle finished in ${Date.now() - pollStartedAt}ms`);
       this.pollInProgress = false;
@@ -195,36 +202,20 @@ class NibeRestApi extends utils.Adapter {
     this.log.debug(`Poll device ${deviceId} synchronized in ${Date.now() - syncStartedAt}ms`);
   }
   async ensureDeviceObjects(devicePath) {
-    await this.setObjectNotExistsAsync(devicePath, {
+    await this.upsertChannel(devicePath, "Device");
+    await this.upsertChannel(`${devicePath}.product`, "Product");
+    await this.upsertChannel(`${devicePath}.points`, "Points");
+    await this.upsertChannel(`${devicePath}.points.readOnly`, "Read-only points");
+    await this.upsertChannel(`${devicePath}.points.writable`, "Writable points");
+    await this.upsertChannel(`${devicePath}.notifications`, "Notifications");
+  }
+  async upsertChannel(id, name) {
+    const channelDefinition = {
       type: "channel",
-      common: { name: "Device" },
+      common: { name },
       native: {}
-    });
-    await this.setObjectNotExistsAsync(`${devicePath}.product`, {
-      type: "channel",
-      common: { name: "Product" },
-      native: {}
-    });
-    await this.setObjectNotExistsAsync(`${devicePath}.points`, {
-      type: "channel",
-      common: { name: "Points" },
-      native: {}
-    });
-    await this.setObjectNotExistsAsync(`${devicePath}.points.readOnly`, {
-      type: "channel",
-      common: { name: "Read-only points" },
-      native: {}
-    });
-    await this.setObjectNotExistsAsync(`${devicePath}.points.writable`, {
-      type: "channel",
-      common: { name: "Writable points" },
-      native: {}
-    });
-    await this.setObjectNotExistsAsync(`${devicePath}.notifications`, {
-      type: "channel",
-      common: { name: "Notifications" },
-      native: {}
-    });
+    };
+    await this.upsertObjectIfNeeded(id, channelDefinition);
   }
   async syncDeviceSummary(devicePath, deviceId, device) {
     await this.upsertState(`${devicePath}.deviceIndex`, {
@@ -286,13 +277,13 @@ class NibeRestApi extends utils.Adapter {
     });
     this.deviceModes.set(`${devicePath}.aidMode`, { deviceId, kind: "aidMode" });
     this.deviceModes.set(`${devicePath}.smartMode`, { deviceId, kind: "smartMode" });
-    await this.setState(`${devicePath}.deviceIndex`, device.deviceIndex, true);
-    await this.setState(`${devicePath}.aidMode`, device.aidMode, true);
-    await this.setState(`${devicePath}.smartMode`, device.smartMode, true);
-    await this.setState(`${devicePath}.product.serialNumber`, device.product.serialNumber, true);
-    await this.setState(`${devicePath}.product.name`, device.product.name, true);
-    await this.setState(`${devicePath}.product.manufacturer`, device.product.manufacturer, true);
-    await this.setState(`${devicePath}.product.firmwareId`, device.product.firmwareId, true);
+    await this.setCachedStateValue(`${devicePath}.deviceIndex`, device.deviceIndex, true);
+    await this.setCachedStateValue(`${devicePath}.aidMode`, device.aidMode, true);
+    await this.setCachedStateValue(`${devicePath}.smartMode`, device.smartMode, true);
+    await this.setCachedStateValue(`${devicePath}.product.serialNumber`, device.product.serialNumber, true);
+    await this.setCachedStateValue(`${devicePath}.product.name`, device.product.name, true);
+    await this.setCachedStateValue(`${devicePath}.product.manufacturer`, device.product.manufacturer, true);
+    await this.setCachedStateValue(`${devicePath}.product.firmwareId`, device.product.firmwareId, true);
   }
   async syncPoints(devicePath, deviceId) {
     var _a, _b;
@@ -355,7 +346,7 @@ class NibeRestApi extends utils.Adapter {
       } else {
         this.writablePoints.delete(pointPath);
       }
-      await this.setState(pointPath, {
+      await this.setCachedState(pointPath, {
         val: this.convertPointToStateValue(point),
         ack: true,
         q: point.datavalue.isOk ? 0 : 1
@@ -389,8 +380,8 @@ class NibeRestApi extends utils.Adapter {
       read: true,
       write: false
     });
-    await this.setState(`${devicePath}.notifications.activeCount`, notifications.alarms.length, true);
-    await this.setState(`${devicePath}.notifications.json`, JSON.stringify(notifications.alarms), true);
+    await this.setCachedStateValue(`${devicePath}.notifications.activeCount`, notifications.alarms.length, true);
+    await this.setCachedStateValue(`${devicePath}.notifications.json`, JSON.stringify(notifications.alarms), true);
     this.log.debug(
       `Poll notifications for device ${deviceId}: response ${notificationsResponseDurationMs}ms, preparation ${Date.now() - notificationsPreparationStartedAt}ms, ${notifications.alarms.length} alarm(s)`
     );
@@ -406,7 +397,7 @@ class NibeRestApi extends utils.Adapter {
     this.log.debug(`Writing mode ${stateId} via ${path} with payload: ${this.formatUnknownForLog(body)}`);
     const response = await this.apiRequest({ method: "POST", path, body });
     this.log.debug(`Write response for mode ${stateId}: ${this.formatUnknownForLog(response)}`);
-    await this.setState(stateId, normalizedValue, true);
+    await this.setCachedStateValue(stateId, normalizedValue, true);
     await this.pollApi();
   }
   async handlePointWrite(stateId, value) {
@@ -443,7 +434,7 @@ class NibeRestApi extends utils.Adapter {
     }
     const updatedPoint = this.extractWritablePointFromWriteResult(resultValue, descriptor.pointId);
     if (updatedPoint) {
-      await this.setState(stateId, {
+      await this.setCachedState(stateId, {
         val: this.convertPointToStateValue(updatedPoint),
         ack: true,
         q: updatedPoint.datavalue.isOk ? 0 : 1
@@ -462,7 +453,7 @@ class NibeRestApi extends utils.Adapter {
       if (!this.isValidPointValue(point)) {
         throw new Error(`Point ${pointDescriptor.pointId} has no metadata or datavalue`);
       }
-      await this.setState(stateId, this.convertPointToStateValue(point), true);
+      await this.setCachedStateValue(stateId, this.convertPointToStateValue(point), true);
       return;
     }
     const deviceDescriptor = this.deviceModes.get(stateId);
@@ -471,7 +462,7 @@ class NibeRestApi extends utils.Adapter {
         path: `/api/v1/devices/${encodeURIComponent(deviceDescriptor.deviceId)}`
       });
       const value = deviceDescriptor.kind === "aidMode" ? device.aidMode : device.smartMode;
-      await this.setState(stateId, value, true);
+      await this.setCachedStateValue(stateId, value, true);
     }
   }
   convertPointToStateValue(point) {
@@ -783,7 +774,7 @@ Point ID: ${pointId}` : `Point ID: ${pointId}`;
     try {
       return JSON.stringify(value);
     } catch {
-      return String(value);
+      return Object.prototype.toString.call(value);
     }
   }
   formatUnknownForLog(value) {
@@ -799,7 +790,7 @@ Point ID: ${pointId}` : `Point ID: ${pointId}`;
     try {
       return JSON.stringify(value);
     } catch {
-      return String(value);
+      return Object.prototype.toString.call(value);
     }
   }
   isAcceptedPointWriteResult(value, pointId) {
@@ -823,7 +814,7 @@ Point ID: ${pointId}` : `Point ID: ${pointId}`;
   }
   async upsertState(id, common) {
     var _a, _b, _c, _d, _e, _f;
-    await this.extendObjectAsync(id, {
+    const stateDefinition = {
       type: "state",
       common: {
         name: (_a = common.name) != null ? _a : id,
@@ -838,7 +829,36 @@ Point ID: ${pointId}` : `Point ID: ${pointId}`;
         states: common.states
       },
       native: (_f = common.native) != null ? _f : {}
-    });
+    };
+    await this.upsertObjectIfNeeded(id, stateDefinition);
+  }
+  async upsertObjectIfNeeded(id, definition) {
+    const definitionSignature = JSON.stringify(definition);
+    if (this.objectDefinitionCache.get(id) === definitionSignature) {
+      return;
+    }
+    await this.extendObjectAsync(id, definition);
+    this.objectDefinitionCache.set(id, definitionSignature);
+  }
+  async setCachedStateValue(id, val, ack) {
+    await this.setCachedState(id, { val, ack });
+  }
+  async setCachedState(id, state) {
+    var _a, _b;
+    const normalizedState = {
+      val: (_a = state.val) != null ? _a : null,
+      ack: (_b = state.ack) != null ? _b : false,
+      q: state.q
+    };
+    const cachedState = this.stateValueCache.get(id);
+    if (cachedState && this.areStateSnapshotsEqual(cachedState, normalizedState)) {
+      return;
+    }
+    await this.setState(id, state);
+    this.stateValueCache.set(id, normalizedState);
+  }
+  areStateSnapshotsEqual(left, right) {
+    return left.val === right.val && left.ack === right.ack && left.q === right.q;
   }
 }
 if (require.main !== module) {

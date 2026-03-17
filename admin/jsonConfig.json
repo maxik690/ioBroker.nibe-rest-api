@@ -57,7 +57,7 @@
         "writeLockInterval": {
             "type": "number",
             "label": "Write lock interval (seconds)",
-            "help": "Minimum time between two writes to the same state. Set to 0 to disable.",
+            "help": "Minimum time between two writes to the same state. Recommended to avoid too many writes, which could damage the device EEPROM. Set to 0 to disable.",
             "min": 0,
             "xs": 12,
             "sm": 12,

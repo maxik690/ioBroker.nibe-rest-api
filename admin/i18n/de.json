@@ -8,7 +8,7 @@
     "Optional. If set, this value is sent after 'Basic '. Username/password are then ignored.": "Optional. Wenn gesetzt, wird dieser Wert nach 'Basic ' gesendet. Benutzername und Passwort werden dann ignoriert.",
     "Poll interval (seconds)": "Abfrageintervall (Sekunden)",
     "Write lock interval (seconds)": "Schreibsperren-Intervall (Sekunden)",
-    "Minimum time between two writes to the same state. Set to 0 to disable.": "Mindestabstand zwischen zwei Schreibzugriffen auf denselben State. Mit 0 deaktivieren."
+    "Minimum time between two writes to the same state. Recommended to avoid too many writes, which could damage the device EEPROM. Set to 0 to disable.": "Mindestabstand zwischen zwei Schreibzugriffen auf denselben State. Es wird empfohlen, diesen Wert zu verwenden, um zu viele Schreibzugriffe zu verhindern, da diese das EEPROM des Geraets beschaedigen koennten. Mit 0 deaktivieren."
     ,"Device IDs": "Geräte-IDs",
     "Optional comma-separated list. Empty = all devices returned by the API.": "Optionale kommaseparierte Liste. Leer = alle von der API zurückgegebenen Geräte.",
     "Ignore TLS certificate errors": "TLS-Zertifikatfehler ignorieren",
