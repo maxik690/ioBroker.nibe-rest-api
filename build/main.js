@@ -37,14 +37,21 @@ var https = __toESM(require("node:https"));
 const INVISIBLE_WORD_JOINERS = /\u00AD|\u034F|\u061C|\u115F|\u1160|\u17B4|\u17B5|\u180B|\u180C|\u180D|\u200B|\u200C|\u200D|\u200E|\u200F|\u202A|\u202B|\u202C|\u202D|\u202E|\u2060|\u2061|\u2062|\u2063|\u2064|\u2065|\u2066|\u2067|\u2068|\u2069|\u206A|\u206B|\u206C|\u206D|\u206E|\u206F|\uFE00|\uFE01|\uFE02|\uFE03|\uFE04|\uFE05|\uFE06|\uFE07|\uFE08|\uFE09|\uFE0A|\uFE0B|\uFE0C|\uFE0D|\uFE0E|\uFE0F|\uFEFF/gu;
 const COMBINING_MARKS = /[\u0300-\u036f]/g;
 class NibeRestApi extends utils.Adapter {
+  static API_REQUEST_TIMEOUT_MS = 15e3;
   pollTimer;
+  customPollTimer;
   pollInProgress = false;
+  customPollInProgress = false;
   writablePoints = /* @__PURE__ */ new Map();
   deviceModes = /* @__PURE__ */ new Map();
   loggedUnknownPointShapes = /* @__PURE__ */ new Set();
   lastSuccessfulWrites = /* @__PURE__ */ new Map();
   objectDefinitionCache = /* @__PURE__ */ new Map();
   stateValueCache = /* @__PURE__ */ new Map();
+  pointStateIndex = /* @__PURE__ */ new Map();
+  pointStateDescriptors = /* @__PURE__ */ new Map();
+  customPollLastRun = /* @__PURE__ */ new Map();
+  unresolvedCustomPolls = /* @__PURE__ */ new Set();
   /**
    * Creates the adapter instance with the standard ioBroker lifecycle handlers.
    *
@@ -58,6 +65,7 @@ class NibeRestApi extends utils.Adapter {
     this.on("ready", this.onReady.bind(this));
     this.on("stateChange", this.onStateChange.bind(this));
     this.on("unload", this.onUnload.bind(this));
+    this.on("message", this.onMessage.bind(this));
   }
   async onReady() {
     var _a;
@@ -95,6 +103,8 @@ class NibeRestApi extends utils.Adapter {
       return;
     }
     this.subscribeStates("devices.*");
+    await this.cleanupDisabledConfiguredPoints();
+    this.logLoadedCustomPollSchedules();
     await this.pollApi();
   }
   onUnload(callback) {
@@ -102,6 +112,10 @@ class NibeRestApi extends utils.Adapter {
       if (this.pollTimer) {
         clearTimeout(this.pollTimer);
         this.pollTimer = void 0;
+      }
+      if (this.customPollTimer) {
+        clearTimeout(this.customPollTimer);
+        this.customPollTimer = void 0;
       }
       callback();
     } catch (error) {
@@ -135,17 +149,69 @@ class NibeRestApi extends utils.Adapter {
       await this.refreshSingleState(stateId);
     }
   }
+  async onMessage(obj) {
+    var _a, _b, _c, _d, _e, _f;
+    if (!obj.command) {
+      return;
+    }
+    try {
+      if (obj.command === "discoverPoints") {
+        this.log.debug(
+          `Received admin message discoverPoints from ${(_a = obj.from) != null ? _a : "unknown"} with callback ${obj.callback ? "yes" : "no"}`
+        );
+        const payload = this.isRecord(obj.message) ? obj.message : {};
+        const discoveryConfig = {
+          baseUrl: (_b = this.readString(payload.baseUrl)) == null ? void 0 : _b.trim(),
+          username: this.readString(payload.username),
+          password: this.readString(payload.password),
+          basicAuth: (_c = this.readString(payload.basicAuth)) == null ? void 0 : _c.trim(),
+          ignoreTlsErrors: typeof payload.ignoreTlsErrors === "boolean" ? payload.ignoreTlsErrors : void 0,
+          deviceIds: (_d = this.readString(payload.deviceIds)) == null ? void 0 : _d.trim()
+        };
+        const catalog = await this.buildDiscoveredPointCatalog(discoveryConfig);
+        this.log.debug(`Discovery finished with ${catalog.length} point(s)`);
+        this.sendMessageResponse(obj, catalog);
+        return;
+      }
+      if (obj.command === "getPointOptions") {
+        const payload = this.isRecord(obj.message) ? obj.message : {};
+        const deviceId = (_e = this.readString(payload.deviceId)) == null ? void 0 : _e.trim();
+        const options = await this.getDiscoveredPointOptions(deviceId);
+        this.sendMessageResponse(obj, options);
+        return;
+      }
+      if (obj.command === "getIntervalProfileOptions") {
+        this.log.debug(`Received admin message getIntervalProfileOptions from ${(_f = obj.from) != null ? _f : "unknown"}`);
+        const options = this.getIntervalProfileOptions();
+        this.sendMessageResponse(obj, options);
+      }
+    } catch (error) {
+      this.log.debug(
+        `Admin message ${obj.command} failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+      this.sendMessageResponse(obj, { error: error.message });
+    }
+  }
   scheduleNextPoll() {
     if (this.pollTimer) {
       clearTimeout(this.pollTimer);
     }
-    const intervalSeconds = Math.max(Number(this.config.pollInterval) || 30, 5);
+    const intervalSeconds = Math.max(Number(this.config.pollInterval) || 1800, 10);
     this.pollTimer = this.setTimeout(() => {
       void this.pollApi();
     }, intervalSeconds * 1e3);
   }
+  scheduleNextCustomPoll() {
+    if (this.customPollTimer) {
+      clearTimeout(this.customPollTimer);
+    }
+    this.customPollTimer = this.setTimeout(() => {
+      void this.runCustomPointPolls();
+    }, 1e3);
+  }
   async pollApi() {
     var _a, _b, _c;
+    this.log.debug("pollApi started");
     if (this.pollInProgress) {
       this.log.debug("Polling still running, skipping this cycle");
       this.scheduleNextPoll();
@@ -155,7 +221,9 @@ class NibeRestApi extends utils.Adapter {
     const pollStartedAt = Date.now();
     try {
       const devicesRequestStartedAt = Date.now();
+      this.log.debug("pollApi requesting /api/v1/devices");
       const devicesResponse = await this.apiRequest({ path: "/api/v1/devices" });
+      this.log.debug("pollApi received /api/v1/devices response");
       const devicesResponseDurationMs = Date.now() - devicesRequestStartedAt;
       const devices = this.filterConfiguredDevices((_a = devicesResponse.devices) != null ? _a : []);
       this.log.debug(
@@ -176,11 +244,158 @@ class NibeRestApi extends utils.Adapter {
       this.log.debug(`Poll cycle finished in ${Date.now() - pollStartedAt}ms`);
       this.pollInProgress = false;
       this.scheduleNextPoll();
+      this.scheduleNextCustomPoll();
     }
   }
-  filterConfiguredDevices(devices) {
+  async runCustomPointPolls() {
+    var _a, _b, _c, _d, _e;
+    if (this.customPollInProgress || this.pollInProgress) {
+      this.scheduleNextCustomPoll();
+      return;
+    }
+    const schedules = this.getCustomPointPollSchedules();
+    if (!schedules.length) {
+      this.scheduleNextCustomPoll();
+      return;
+    }
+    this.customPollInProgress = true;
+    try {
+      const now = Date.now();
+      for (const schedule of schedules) {
+        const resolvedStateIds = this.resolveCustomPollStateIds(schedule);
+        if (!resolvedStateIds.length) {
+          const unresolvedKey = `${(_a = schedule.deviceId) != null ? _a : "*"}:${schedule.pointId}`;
+          if (!this.unresolvedCustomPolls.has(unresolvedKey)) {
+            this.unresolvedCustomPolls.add(unresolvedKey);
+            this.log.debug(
+              `Custom point poll could not yet resolve point ${schedule.pointId} on ${(_b = schedule.deviceId) != null ? _b : "all devices"}. A full poll must discover the point first.`
+            );
+          }
+          continue;
+        }
+        this.unresolvedCustomPolls.delete(`${(_c = schedule.deviceId) != null ? _c : "*"}:${schedule.pointId}`);
+        for (const stateId of resolvedStateIds) {
+          const scheduleKey = `${stateId}:${schedule.intervalMs}`;
+          const lastRun = (_d = this.customPollLastRun.get(scheduleKey)) != null ? _d : 0;
+          if (now - lastRun < schedule.intervalMs) {
+            continue;
+          }
+          this.log.debug(
+            `Custom point poll triggered for ${stateId} (point ${schedule.pointId}, device ${(_e = schedule.deviceId) != null ? _e : "auto"}, interval ${Math.round(schedule.intervalMs / 1e3)}s)`
+          );
+          await this.refreshSingleState(stateId);
+          this.customPollLastRun.set(scheduleKey, Date.now());
+        }
+      }
+    } catch (error) {
+      this.log.debug(`Custom point polling failed: ${error.message}`);
+    } finally {
+      this.customPollInProgress = false;
+      this.scheduleNextCustomPoll();
+    }
+  }
+  async buildDiscoveredPointCatalog(discoveryConfig) {
     var _a;
-    const configuredIds = (_a = this.config.deviceIds) == null ? void 0 : _a.split(",").map((id) => id.trim()).filter(Boolean);
+    const cachedCatalog = await this.buildDiscoveredPointCatalogFromObjects();
+    if (cachedCatalog.length && !(discoveryConfig == null ? void 0 : discoveryConfig.baseUrl)) {
+      return cachedCatalog;
+    }
+    const devicesResponse = await this.apiRequest({ path: "/api/v1/devices" }, discoveryConfig);
+    const devices = this.filterConfiguredDevices((_a = devicesResponse.devices) != null ? _a : [], discoveryConfig == null ? void 0 : discoveryConfig.deviceIds);
+    const catalog = [];
+    for (const device of devices) {
+      const deviceId = device.product.serialNumber || String(device.deviceIndex);
+      const points = await this.apiRequest(
+        {
+          path: `/api/v1/devices/${encodeURIComponent(deviceId)}/points`
+        },
+        discoveryConfig
+      );
+      for (const [pointKey, rawPoint] of Object.entries(points)) {
+        const pointId = Number(pointKey);
+        if (!Number.isFinite(pointId)) {
+          continue;
+        }
+        const point = this.normalizePointValue(rawPoint, pointId);
+        if (!this.isValidPointValue(point)) {
+          continue;
+        }
+        catalog.push({
+          deviceId,
+          pointId,
+          title: point.title || `Point ${pointId}`,
+          writable: point.metadata.isWritable,
+          unit: point.metadata.shortUnit || point.metadata.unit || "",
+          stateId: this.getPointStateBaseName(point.title),
+          currentValue: this.convertPointToStateValue(point)
+        });
+      }
+    }
+    return catalog.sort(
+      (left, right) => left.deviceId.localeCompare(right.deviceId) || left.pointId - right.pointId || left.title.localeCompare(right.title)
+    );
+  }
+  async buildDiscoveredPointCatalogFromObjects() {
+    var _a, _b;
+    const objects = await this.getAdapterObjectsAsync();
+    const catalog = [];
+    for (const [, object] of Object.entries(objects)) {
+      if (object.type !== "state" || !this.isRecord(object.native)) {
+        continue;
+      }
+      const pointId = Number(object.native.pointId);
+      const deviceId = (_a = this.readString(object.native.deviceId)) == null ? void 0 : _a.trim();
+      if (!Number.isFinite(pointId) || !deviceId) {
+        continue;
+      }
+      const commonName = typeof object.common.name === "string" ? object.common.name : this.isRecord(object.common.name) ? this.readString(object.common.name.en) || this.readString(object.common.name.de) : void 0;
+      const title = ((_b = this.readString(object.native.title)) == null ? void 0 : _b.trim()) || commonName || `Point ${pointId}`;
+      const isWritable = object.common.write === true;
+      const unit = typeof object.common.unit === "string" ? object.common.unit : "";
+      const stateId = object._id.startsWith(`${this.namespace}.`) ? object._id.slice(this.namespace.length + 1) : object._id;
+      catalog.push({
+        deviceId,
+        pointId,
+        title,
+        writable: isWritable,
+        unit,
+        stateId,
+        currentValue: null
+      });
+    }
+    return catalog.sort(
+      (left, right) => left.deviceId.localeCompare(right.deviceId) || left.pointId - right.pointId || left.title.localeCompare(right.title)
+    );
+  }
+  async getDiscoveredPointOptions(deviceId) {
+    const catalog = await this.buildDiscoveredPointCatalog();
+    return catalog.filter((entry) => !deviceId || entry.deviceId === deviceId).map((entry) => ({
+      value: entry.pointId,
+      label: `${entry.pointId} - ${entry.title}${entry.unit ? ` (${entry.unit})` : ""}`
+    }));
+  }
+  getIntervalProfileOptions() {
+    var _a;
+    return [
+      {
+        value: "",
+        label: "Full poll only"
+      },
+      ...((_a = this.config.customPollIntervals) != null ? _a : []).filter((entry) => {
+        var _a2;
+        return ((_a2 = entry.id) == null ? void 0 : _a2.trim()) && Number(entry.intervalSeconds) >= 5;
+      }).map((entry) => {
+        var _a2, _b, _c, _d;
+        return {
+          value: (_b = (_a2 = entry.id) == null ? void 0 : _a2.trim()) != null ? _b : "",
+          label: `${((_c = entry.name) == null ? void 0 : _c.trim()) || ((_d = entry.id) == null ? void 0 : _d.trim())} (${Number(entry.intervalSeconds)}s)`
+        };
+      })
+    ];
+  }
+  filterConfiguredDevices(devices, deviceIdsOverride) {
+    var _a;
+    const configuredIds = (_a = deviceIdsOverride != null ? deviceIdsOverride : this.config.deviceIds) == null ? void 0 : _a.split(",").map((id) => id.trim()).filter(Boolean);
     if (!(configuredIds == null ? void 0 : configuredIds.length)) {
       return devices;
     }
@@ -295,6 +510,7 @@ class NibeRestApi extends utils.Adapter {
     const pointsPreparationStartedAt = Date.now();
     let skippedPoints = 0;
     const normalizedPoints = [];
+    const discoveredPointKeys = /* @__PURE__ */ new Set();
     for (const [pointKey, rawPoint] of Object.entries(points)) {
       const pointId = Number(pointKey);
       if (!Number.isFinite(pointId)) {
@@ -316,11 +532,15 @@ class NibeRestApi extends utils.Adapter {
       pointNameCounts.set(countKey, ((_a = pointNameCounts.get(countKey)) != null ? _a : 0) + 1);
     }
     for (const { pointId, point } of normalizedPoints) {
+      if (!this.isDiscoveredPointEnabled(deviceId, pointId)) {
+        continue;
+      }
       const pointGroupPath = point.metadata.isWritable ? `${devicePath}.points.writable` : `${devicePath}.points.readOnly`;
       const baseName = this.getPointStateBaseName(point.title);
       const countKey = `${point.metadata.isWritable ? "writable" : "readOnly"}:${baseName}`;
       const pointStateId = ((_b = pointNameCounts.get(countKey)) != null ? _b : 0) > 1 ? `${baseName}_${pointId}` : baseName;
       const pointPath = `${pointGroupPath}.${pointStateId}`;
+      const pointIndexKey = this.getPointIndexKey(deviceId, pointId);
       await this.upsertState(pointPath, {
         name: point.title || `Point ${pointId}`,
         role: this.determinePointRole(point.metadata),
@@ -346,6 +566,9 @@ class NibeRestApi extends utils.Adapter {
       } else {
         this.writablePoints.delete(pointPath);
       }
+      this.pointStateIndex.set(pointIndexKey, pointPath);
+      this.pointStateDescriptors.set(pointPath, { deviceId, pointId });
+      discoveredPointKeys.add(pointIndexKey);
       await this.setCachedState(pointPath, {
         val: this.convertPointToStateValue(point),
         ack: true,
@@ -354,6 +577,20 @@ class NibeRestApi extends utils.Adapter {
     }
     if (skippedPoints > 0) {
       this.log.debug(`Skipped ${skippedPoints} invalid points on device ${deviceId}`);
+    }
+    for (const pointIndexKey of Array.from(this.pointStateIndex.keys())) {
+      if (!pointIndexKey.startsWith(`${deviceId}:`) || discoveredPointKeys.has(pointIndexKey)) {
+        continue;
+      }
+      const stateId = this.pointStateIndex.get(pointIndexKey);
+      this.pointStateIndex.delete(pointIndexKey);
+      if (stateId) {
+        this.pointStateDescriptors.delete(stateId);
+        this.writablePoints.delete(stateId);
+        this.stateValueCache.delete(stateId);
+        this.objectDefinitionCache.delete(stateId);
+        await this.delObjectAsync(stateId);
+      }
     }
     this.log.debug(
       `Poll points for device ${deviceId}: response ${pointsResponseDurationMs}ms, preparation ${Date.now() - pointsPreparationStartedAt}ms, ${normalizedPoints.length} point(s)`
@@ -444,7 +681,8 @@ class NibeRestApi extends utils.Adapter {
     await this.refreshSingleState(stateId);
   }
   async refreshSingleState(stateId) {
-    const pointDescriptor = this.writablePoints.get(stateId);
+    var _a;
+    const pointDescriptor = (_a = this.writablePoints.get(stateId)) != null ? _a : this.pointStateDescriptors.get(stateId);
     if (pointDescriptor) {
       const response = await this.apiRequest({
         path: `/api/v1/devices/${encodeURIComponent(pointDescriptor.deviceId)}/points/${pointDescriptor.pointId}`
@@ -542,32 +780,36 @@ class NibeRestApi extends utils.Adapter {
     const lockIntervalSeconds = Math.max(Number(this.config.writeLockInterval) || 120, 0);
     return lockIntervalSeconds * 1e3;
   }
-  getAuthorizationHeaderValue() {
-    var _a, _b, _c, _d, _e;
-    if ((_a = this.config.basicAuth) == null ? void 0 : _a.trim()) {
-      return `Basic ${this.config.basicAuth.trim()}`;
+  getAuthorizationHeaderValue(discoveryConfig) {
+    var _a, _b, _c;
+    const basicAuth = (_a = discoveryConfig == null ? void 0 : discoveryConfig.basicAuth) != null ? _a : this.config.basicAuth;
+    const username = (_b = discoveryConfig == null ? void 0 : discoveryConfig.username) != null ? _b : this.config.username;
+    const password = (_c = discoveryConfig == null ? void 0 : discoveryConfig.password) != null ? _c : this.config.password;
+    if (basicAuth == null ? void 0 : basicAuth.trim()) {
+      return `Basic ${basicAuth.trim()}`;
     }
-    if (!((_b = this.config.username) == null ? void 0 : _b.trim()) && !((_c = this.config.password) == null ? void 0 : _c.trim())) {
+    if (!(username == null ? void 0 : username.trim()) && !(password == null ? void 0 : password.trim())) {
       return void 0;
     }
-    const token = import_node_buffer.Buffer.from(`${(_d = this.config.username) != null ? _d : ""}:${(_e = this.config.password) != null ? _e : ""}`).toString("base64");
+    const token = import_node_buffer.Buffer.from(`${username != null ? username : ""}:${password != null ? password : ""}`).toString("base64");
     return `Basic ${token}`;
   }
-  async apiRequest(options) {
-    var _a;
-    const baseUrl = new URL(this.config.baseUrl);
+  async apiRequest(options, discoveryConfig) {
+    var _a, _b;
+    const resolvedBaseUrl = ((_a = discoveryConfig == null ? void 0 : discoveryConfig.baseUrl) == null ? void 0 : _a.trim()) || this.config.baseUrl;
+    const baseUrl = new URL(resolvedBaseUrl);
     const requestPath = new URL(options.path, `${baseUrl.origin}/`);
     const body = options.body == null ? void 0 : JSON.stringify(options.body);
     const headers = {
       Accept: "application/json",
-      Authorization: (_a = this.getAuthorizationHeaderValue()) != null ? _a : ""
+      Authorization: (_b = this.getAuthorizationHeaderValue(discoveryConfig)) != null ? _b : ""
     };
     if (body) {
       headers["Content-Type"] = "application/json";
       headers["Content-Length"] = import_node_buffer.Buffer.byteLength(body).toString();
     }
     return await new Promise((resolve, reject) => {
-      var _a2;
+      var _a2, _b2;
       const request = https.request(
         {
           protocol: requestPath.protocol,
@@ -577,7 +819,7 @@ class NibeRestApi extends utils.Adapter {
           method: (_a2 = options.method) != null ? _a2 : "GET",
           headers,
           agent: new https.Agent({
-            rejectUnauthorized: !this.config.ignoreTlsErrors
+            rejectUnauthorized: !((_b2 = discoveryConfig == null ? void 0 : discoveryConfig.ignoreTlsErrors) != null ? _b2 : this.config.ignoreTlsErrors)
           })
         },
         (response) => {
@@ -617,6 +859,13 @@ class NibeRestApi extends utils.Adapter {
         }
       );
       request.on("error", reject);
+      request.setTimeout(NibeRestApi.API_REQUEST_TIMEOUT_MS, () => {
+        request.destroy(
+          new Error(
+            `Request timeout after ${NibeRestApi.API_REQUEST_TIMEOUT_MS}ms for ${requestPath.pathname}${requestPath.search}`
+          )
+        );
+      });
       if (body) {
         request.write(body);
       }
@@ -757,6 +1006,118 @@ class NibeRestApi extends utils.Adapter {
     const trimmedDescription = description.trim();
     return trimmedDescription ? `${trimmedDescription}
 Point ID: ${pointId}` : `Point ID: ${pointId}`;
+  }
+  getCustomPointPollSchedules() {
+    var _a, _b;
+    const intervalProfiles = new Map(
+      ((_a = this.config.customPollIntervals) != null ? _a : []).filter((entry) => {
+        var _a2;
+        return ((_a2 = entry.id) == null ? void 0 : _a2.trim()) && Number(entry.intervalSeconds) >= 5;
+      }).map((entry) => {
+        var _a2, _b2;
+        return [(_b2 = (_a2 = entry.id) == null ? void 0 : _a2.trim()) != null ? _b2 : "", Number(entry.intervalSeconds) * 1e3];
+      })
+    );
+    return ((_b = this.config.customPointPolls) != null ? _b : []).map((entry) => {
+      var _a2, _b2, _c;
+      return {
+        enabled: entry.enabled !== false,
+        deviceId: ((_a2 = entry.deviceId) == null ? void 0 : _a2.trim()) || void 0,
+        pointId: Number(entry.pointId),
+        intervalMs: (_c = intervalProfiles.get(((_b2 = entry.intervalProfileId) == null ? void 0 : _b2.trim()) || "")) != null ? _c : 0
+      };
+    }).filter(
+      (entry) => entry.enabled && Number.isFinite(entry.pointId) && entry.pointId > 0 && entry.intervalMs > 0
+    );
+  }
+  isDiscoveredPointEnabled(deviceId, pointId) {
+    var _a;
+    const configuredPoint = ((_a = this.config.discoveredPointCatalog) != null ? _a : []).find(
+      (entry) => {
+        var _a2;
+        return ((_a2 = entry.deviceId) == null ? void 0 : _a2.trim()) === deviceId && Number(entry.pointId) === pointId;
+      }
+    );
+    return (configuredPoint == null ? void 0 : configuredPoint.enabled) !== false;
+  }
+  async cleanupDisabledConfiguredPoints() {
+    var _a, _b;
+    const disabledPointKeys = new Set(
+      ((_a = this.config.discoveredPointCatalog) != null ? _a : []).filter((entry) => {
+        var _a2;
+        return entry.enabled === false && ((_a2 = entry.deviceId) == null ? void 0 : _a2.trim()) && Number.isFinite(entry.pointId);
+      }).map((entry) => {
+        var _a2;
+        return `${(_a2 = entry.deviceId) == null ? void 0 : _a2.trim()}:${Number(entry.pointId)}`;
+      })
+    );
+    if (!disabledPointKeys.size) {
+      return;
+    }
+    const objects = await this.getAdapterObjectsAsync();
+    let removedCount = 0;
+    for (const [objectId, object] of Object.entries(objects)) {
+      if (object.type !== "state" || !this.isRecord(object.native)) {
+        continue;
+      }
+      const pointId = Number(object.native.pointId);
+      const deviceId = (_b = this.readString(object.native.deviceId)) == null ? void 0 : _b.trim();
+      if (!deviceId || !Number.isFinite(pointId)) {
+        continue;
+      }
+      const pointKey = `${deviceId}:${pointId}`;
+      if (!disabledPointKeys.has(pointKey)) {
+        continue;
+      }
+      const stateId = objectId.startsWith(`${this.namespace}.`) ? objectId.slice(this.namespace.length + 1) : objectId;
+      this.pointStateIndex.delete(pointKey);
+      this.pointStateDescriptors.delete(stateId);
+      this.writablePoints.delete(stateId);
+      this.stateValueCache.delete(stateId);
+      this.objectDefinitionCache.delete(stateId);
+      await this.delStateAsync(stateId).catch(() => void 0);
+      await this.delObjectAsync(stateId).catch(() => void 0);
+      removedCount++;
+    }
+    if (removedCount > 0) {
+      this.log.debug(`Removed ${removedCount} disabled point state(s) from objects/states`);
+    }
+  }
+  logLoadedCustomPollSchedules() {
+    const schedules = this.getCustomPointPollSchedules();
+    if (!schedules.length) {
+      this.log.debug("Loaded 0 custom poll schedules");
+      return;
+    }
+    const serializedSchedules = schedules.map(
+      (schedule) => {
+        var _a;
+        return `${(_a = schedule.deviceId) != null ? _a : "all devices"}:${schedule.pointId} -> ${Math.round(schedule.intervalMs / 1e3)}s`;
+      }
+    ).join(", ");
+    this.log.debug(`Loaded ${schedules.length} custom poll schedule(s): ${serializedSchedules}`);
+  }
+  resolveCustomPollStateIds(schedule) {
+    if (schedule.deviceId) {
+      const stateId = this.pointStateIndex.get(this.getPointIndexKey(schedule.deviceId, schedule.pointId));
+      return stateId ? [stateId] : [];
+    }
+    const matches = [];
+    for (const [pointIndexKey, stateId] of this.pointStateIndex.entries()) {
+      if (pointIndexKey.endsWith(`:${schedule.pointId}`)) {
+        matches.push(stateId);
+      }
+    }
+    return matches;
+  }
+  getPointIndexKey(deviceId, pointId) {
+    return `${deviceId}:${pointId}`;
+  }
+  sendMessageResponse(obj, response) {
+    if (!obj.from || !obj.command) {
+      return;
+    }
+    this.sendTo(obj.from, obj.command, response, obj.callback);
   }
   sanitizeSegment(value) {
     return value.replace(this.FORBIDDEN_CHARS, "_");

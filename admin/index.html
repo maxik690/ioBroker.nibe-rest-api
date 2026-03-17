@@ -1,0 +1,1341 @@
+<html>
+    <head>
+        <meta charset="utf-8" />
+        <title>NIBE REST API</title>
+        <link
+            rel="stylesheet"
+            type="text/css"
+            href="../../css/adapter.css"
+        />
+        <link
+            rel="stylesheet"
+            type="text/css"
+            href="../../lib/css/materialize.css"
+        />
+        <script
+            type="text/javascript"
+            src="../../lib/js/jquery-3.2.1.min.js"
+        ></script>
+        <script
+            type="text/javascript"
+            src="../../socket.io/socket.io.js"
+        ></script>
+        <script
+            type="text/javascript"
+            src="../../js/translate.js"
+        ></script>
+        <script
+            type="text/javascript"
+            src="../../lib/js/materialize.js"
+        ></script>
+        <script
+            type="text/javascript"
+            src="../../js/adapter-settings.js"
+        ></script>
+        <script
+            type="text/javascript"
+            src="words.js"
+        ></script>
+        <link
+            rel="stylesheet"
+            type="text/css"
+            href="style.css"
+        />
+        <script type="text/javascript">
+            const COMPLETE_POLL_FILTER_VALUE = "__complete_poll__";
+            let currentSettings = {};
+            let currentOnChange = null;
+            let pendingProfileDelete = null;
+            let intervalProfileRefreshTimeout = null;
+            let discoveryFilters = {
+                search: "",
+                deviceId: "",
+                writable: "",
+                intervalProfileId: "",
+            };
+
+            function t(text) {
+                return typeof _ === "function" ? _(text) : text;
+            }
+
+            function formatDebugValue(value) {
+                if (typeof value === "string") {
+                    return value;
+                }
+                try {
+                    return JSON.stringify(value);
+                } catch (error) {
+                    return String(error);
+                }
+            }
+
+            function getNextIntervalProfileId() {
+                const profiles = Array.isArray(currentSettings.customPollIntervals)
+                    ? currentSettings.customPollIntervals
+                    : [];
+                const maxId = profiles.reduce((max, entry) => {
+                    const numericId = Number(entry && entry.id);
+                    return Number.isFinite(numericId) ? Math.max(max, numericId) : max;
+                }, 0);
+                return String(maxId + 1);
+            }
+
+            function normalizeIntervalProfiles() {
+                const profiles = Array.isArray(currentSettings.customPollIntervals)
+                    ? currentSettings.customPollIntervals
+                    : [];
+                const seenIds = new Set();
+                profiles.forEach(entry => {
+                    if (!entry) {
+                        return;
+                    }
+                    let id = String(entry.id || "").trim();
+                    if (!id || seenIds.has(id)) {
+                        id = getNextIntervalProfileId();
+                    }
+                    entry.id = id;
+                    seenIds.add(id);
+                });
+                currentSettings.customPollIntervals = profiles;
+            }
+
+            function getDiscoveryTargetInstance() {
+                const globalAdapter = typeof adapter === "string" && adapter ? adapter : "nibe-rest-api";
+                const urlParams = new URLSearchParams(window.location.search);
+                const urlInstance = urlParams.get("instance");
+                const globalInstance =
+                    typeof instance === "number" || (typeof instance === "string" && instance !== "")
+                        ? String(instance)
+                        : "";
+                const resolvedInstance = globalInstance || urlInstance || "0";
+
+                return `${globalAdapter}.${resolvedInstance}`;
+            }
+
+            function markChanged() {
+                if (typeof currentOnChange === "function") {
+                    currentOnChange(true);
+                }
+            }
+
+            function getInputValue(id, fallback) {
+                const element = document.getElementById(id);
+                if (!element) {
+                    return fallback;
+                }
+                if (element.type === "checkbox") {
+                    return element.checked;
+                }
+                if (element.type === "number") {
+                    const value = Number(element.value);
+                    return Number.isFinite(value) ? value : fallback;
+                }
+                return element.value;
+            }
+
+            function parseBaseUrl(baseUrl) {
+                const fallback = {
+                    protocol: "https",
+                    host: "",
+                    port: "8443",
+                };
+                if (!baseUrl) {
+                    return fallback;
+                }
+                try {
+                    const url = new URL(baseUrl);
+                    return {
+                        protocol: (url.protocol || "https:").replace(":", ""),
+                        host: url.hostname || "",
+                        port: url.port || (url.protocol === "http:" ? "80" : "8443"),
+                    };
+                } catch (error) {
+                    const match = String(baseUrl).match(/^(https?):\/\/([^/:]+)(?::(\d+))?/i);
+                    if (!match) {
+                        return fallback;
+                    }
+                    return {
+                        protocol: (match[1] || "https").toLowerCase(),
+                        host: match[2] || "",
+                        port: match[3] || (match[1] && match[1].toLowerCase() === "http" ? "80" : "8443"),
+                    };
+                }
+            }
+
+            function composeBaseUrl() {
+                const protocol = String(getInputValue("baseUrlProtocol", "https") || "https").replace(/:$/, "");
+                const host = String(getInputValue("baseUrlHost", "") || "").trim();
+                const port = String(getInputValue("baseUrlPort", "8443") || "").trim();
+                if (!host) {
+                    return "";
+                }
+                return `${protocol}://${host}${port ? `:${port}` : ""}/`;
+            }
+
+            function syncBaseInputsToSettings() {
+                currentSettings.baseUrl = composeBaseUrl();
+                currentSettings.username = getInputValue("username", "");
+                currentSettings.password = getInputValue("password", "");
+                currentSettings.basicAuth = getInputValue("basicAuth", "");
+                currentSettings.pollInterval = getInputValue("pollInterval", 1800);
+                currentSettings.writeLockInterval = getInputValue("writeLockInterval", 120);
+                currentSettings.deviceIds = getInputValue("deviceIds", "");
+                currentSettings.ignoreTlsErrors = getInputValue("ignoreTlsErrors", true);
+                currentSettings.fetchNotifications = getInputValue("fetchNotifications", true);
+            }
+
+            function syncAuthModeUi() {
+                const usernameInput = document.getElementById("username");
+                const passwordInput = document.getElementById("password");
+                const basicAuthInput = document.getElementById("basicAuth");
+                const userPassGroup = document.getElementById("userPassGroup");
+                const basicAuthGroup = document.getElementById("basicAuthGroup");
+
+                if (!usernameInput || !passwordInput || !basicAuthInput) {
+                    return;
+                }
+
+                const hasUserPass = Boolean(
+                    String(usernameInput.value || "").trim() || String(passwordInput.value || "").trim(),
+                );
+                const hasBasicAuth = Boolean(String(basicAuthInput.value || "").trim());
+
+                const useBasicAuth = hasBasicAuth;
+                const useUserPass = !hasBasicAuth && hasUserPass;
+
+                usernameInput.disabled = useBasicAuth;
+                passwordInput.disabled = useBasicAuth;
+                basicAuthInput.disabled = useUserPass;
+
+                if (userPassGroup) {
+                    userPassGroup.classList.toggle("is-disabled", useBasicAuth);
+                }
+                if (basicAuthGroup) {
+                    basicAuthGroup.classList.toggle("is-disabled", useUserPass);
+                }
+            }
+
+            function setBaseInputs(settings) {
+                const parsedBaseUrl = parseBaseUrl(settings.baseUrl || "");
+                document.getElementById("baseUrlProtocol").value = parsedBaseUrl.protocol;
+                document.getElementById("baseUrlHost").value = parsedBaseUrl.host;
+                document.getElementById("baseUrlPort").value = parsedBaseUrl.port;
+                document.getElementById("username").value = settings.username || "";
+                document.getElementById("password").value = settings.password || "";
+                document.getElementById("basicAuth").value = settings.basicAuth || "";
+                document.getElementById("pollInterval").value = settings.pollInterval ?? 1800;
+                document.getElementById("writeLockInterval").value = settings.writeLockInterval ?? 120;
+                document.getElementById("deviceIds").value = settings.deviceIds || "";
+                document.getElementById("ignoreTlsErrors").checked = settings.ignoreTlsErrors !== false;
+                document.getElementById("fetchNotifications").checked = settings.fetchNotifications !== false;
+                syncAuthModeUi();
+            }
+
+            function createTextCell(value, onInput, inputType) {
+                const cell = document.createElement("td");
+                const input = document.createElement("input");
+                input.type = inputType || "text";
+                input.value = value ?? "";
+                input.addEventListener("input", event => onInput(event.target.value));
+                cell.appendChild(input);
+                return cell;
+            }
+
+            function createCheckboxCell(value, onChange) {
+                const cell = document.createElement("td");
+                cell.className = "checkbox-cell";
+                const label = document.createElement("label");
+                label.className = "table-checkbox";
+                const input = document.createElement("input");
+                input.type = "checkbox";
+                input.className = "filled-in";
+                input.checked = !!value;
+                input.addEventListener("change", event => onChange(event.target.checked));
+                const span = document.createElement("span");
+                span.innerHTML = "&nbsp;";
+                label.appendChild(input);
+                label.appendChild(span);
+                cell.appendChild(label);
+                return cell;
+            }
+
+            function createSelectCell(options, value, onChange) {
+                const cell = document.createElement("td");
+                const select = document.createElement("select");
+                select.className = "compact-select";
+                options.forEach(option => {
+                    const element = document.createElement("option");
+                    element.value = option.value;
+                    element.textContent = option.label;
+                    if (String(option.value) === String(value ?? "")) {
+                        element.selected = true;
+                    }
+                    select.appendChild(element);
+                });
+                select.addEventListener("change", event => onChange(event.target.value));
+                cell.appendChild(select);
+                return cell;
+            }
+
+            function initMaterializeSelects() {
+                if (!window.M || !window.M.FormSelect) {
+                    return;
+                }
+                document.querySelectorAll("select").forEach(element => {
+                    const instance = window.M.FormSelect.getInstance(element);
+                    if (instance) {
+                        instance.destroy();
+                    }
+                    window.M.FormSelect.init(element, {
+                        dropdownOptions: {
+                            constrainWidth: false,
+                            coverTrigger: false,
+                        },
+                    });
+                });
+            }
+
+            function initMaterializeModals() {
+                if (!window.M || !window.M.Modal) {
+                    return;
+                }
+                document.querySelectorAll(".modal").forEach(element => {
+                    const instance = window.M.Modal.getInstance(element);
+                    if (instance) {
+                        instance.destroy();
+                    }
+                    window.M.Modal.init(element, {
+                        dismissible: true,
+                    });
+                });
+            }
+
+            function scheduleDiscoveredPointsRefresh() {
+                if (intervalProfileRefreshTimeout) {
+                    clearTimeout(intervalProfileRefreshTimeout);
+                }
+                intervalProfileRefreshTimeout = setTimeout(() => {
+                    intervalProfileRefreshTimeout = null;
+                    renderDiscoveredPoints();
+                }, 200);
+            }
+
+            function createActionCell(onDelete) {
+                const cell = document.createElement("td");
+                cell.className = "actions";
+                const button = document.createElement("button");
+                button.type = "button";
+                button.className = "danger";
+                button.textContent = t("Remove");
+                button.addEventListener("click", onDelete);
+                cell.appendChild(button);
+                return cell;
+            }
+
+            function formatCurrentValue(value) {
+                if (value === null || typeof value === "undefined" || value === "") {
+                    return "";
+                }
+                if (typeof value === "object") {
+                    return formatDebugValue(value);
+                }
+                return String(value);
+            }
+
+            function getIntervalProfileOptions() {
+                const profiles = Array.isArray(currentSettings.customPollIntervals)
+                    ? currentSettings.customPollIntervals
+                    : [];
+                return [
+                    {
+                        value: "",
+                        label: `${t("Complete poll interval")} (${Number(currentSettings.pollInterval || 1800)}s)`,
+                    },
+                    ...profiles
+                        .filter(entry => entry && entry.id)
+                        .map(entry => ({
+                            value: entry.id,
+                            label: `${entry.name || entry.id} (${Number(entry.intervalSeconds || 0)}s)`,
+                        })),
+                ];
+            }
+
+            function getAssignedIntervalProfileId(entry) {
+                if (entry.intervalProfileId !== undefined) {
+                    return entry.intervalProfileId || "";
+                }
+
+                const customPoll = (currentSettings.customPointPolls || []).find(
+                    row =>
+                        row &&
+                        row.enabled !== false &&
+                        String(row.deviceId || "") === String(entry.deviceId || "") &&
+                        Number(row.pointId) === Number(entry.pointId),
+                );
+                return customPoll && customPoll.intervalProfileId ? customPoll.intervalProfileId : "";
+            }
+
+            function isPointEnabled(entry) {
+                return entry.enabled !== false;
+            }
+
+            function setAllFilteredPointsEnabled(enabled) {
+                const entries = getFilteredDiscoveredEntries();
+                entries.forEach(entry => {
+                    entry.enabled = enabled;
+                    if (!enabled) {
+                        entry.intervalProfileId = "";
+                    }
+                });
+                renderDiscoveredPoints();
+                markChanged();
+            }
+
+            function getPointsUsingIntervalProfile(intervalProfileId) {
+                const entries = Array.isArray(currentSettings.discoveredPointCatalog)
+                    ? currentSettings.discoveredPointCatalog
+                    : [];
+                return entries.filter(
+                    entry => String(getAssignedIntervalProfileId(entry) || "") === String(intervalProfileId || ""),
+                );
+            }
+
+            function getIntervalProfileName(intervalProfileId) {
+                const profiles = Array.isArray(currentSettings.customPollIntervals)
+                    ? currentSettings.customPollIntervals
+                    : [];
+                const profile = profiles.find(entry => String(entry.id || "") === String(intervalProfileId || ""));
+                if (!profile) {
+                    return intervalProfileId || "";
+                }
+                return profile.name || `${t("Interval profile")} ${profile.id}`;
+            }
+
+            function getFilteredDiscoveredEntries() {
+                const entries = Array.isArray(currentSettings.discoveredPointCatalog)
+                    ? currentSettings.discoveredPointCatalog
+                    : [];
+                const search = String(discoveryFilters.search || "")
+                    .trim()
+                    .toLowerCase();
+
+                return entries.filter(entry => {
+                    const assignedIntervalProfileId = getAssignedIntervalProfileId(entry);
+                    if (
+                        discoveryFilters.deviceId &&
+                        String(entry.deviceId || "") !== String(discoveryFilters.deviceId)
+                    ) {
+                        return false;
+                    }
+                    if (discoveryFilters.writable === "yes" && !entry.writable) {
+                        return false;
+                    }
+                    if (discoveryFilters.writable === "no" && entry.writable) {
+                        return false;
+                    }
+                    if (discoveryFilters.intervalProfileId === COMPLETE_POLL_FILTER_VALUE) {
+                        if (String(assignedIntervalProfileId || "") !== "") {
+                            return false;
+                        }
+                    } else if (
+                        discoveryFilters.intervalProfileId &&
+                        String(discoveryFilters.intervalProfileId) !== String(assignedIntervalProfileId || "")
+                    ) {
+                        return false;
+                    }
+                    if (!search) {
+                        return true;
+                    }
+
+                    const haystack = [
+                        entry.deviceId,
+                        entry.pointId,
+                        entry.title,
+                        entry.unit,
+                        formatCurrentValue(entry.currentValue),
+                    ]
+                        .filter(value => value !== null && value !== undefined)
+                        .join(" ")
+                        .toLowerCase();
+
+                    return haystack.includes(search);
+                });
+            }
+
+            function getDiscoveryDeviceOptions() {
+                const entries = Array.isArray(currentSettings.discoveredPointCatalog)
+                    ? currentSettings.discoveredPointCatalog
+                    : [];
+                const deviceIds = [...new Set(entries.map(entry => String(entry.deviceId || "")).filter(Boolean))];
+                return [
+                    { value: "", label: t("All devices") },
+                    ...deviceIds.map(deviceId => ({
+                        value: deviceId,
+                        label: deviceId,
+                    })),
+                ];
+            }
+
+            function renderDiscoveryFilters() {
+                const deviceSelect = document.getElementById("discoveryFilterDeviceId");
+                const writableSelect = document.getElementById("discoveryFilterWritable");
+                const intervalSelect = document.getElementById("discoveryFilterIntervalProfileId");
+
+                if (!deviceSelect || !writableSelect || !intervalSelect) {
+                    return;
+                }
+
+                deviceSelect.innerHTML = "";
+                const deviceNativeSelect = document.createElement("select");
+                deviceNativeSelect.className = "filter-select";
+                getDiscoveryDeviceOptions().forEach(option => {
+                    const element = document.createElement("option");
+                    element.value = option.value;
+                    element.textContent = option.label;
+                    if (String(option.value) === String(discoveryFilters.deviceId || "")) {
+                        element.selected = true;
+                    }
+                    deviceNativeSelect.appendChild(element);
+                });
+                deviceNativeSelect.addEventListener("change", event => {
+                    discoveryFilters.deviceId = event.target.value || "";
+                    renderDiscoveredPoints();
+                });
+                deviceSelect.appendChild(deviceNativeSelect);
+
+                writableSelect.innerHTML = "";
+                const writableNativeSelect = document.createElement("select");
+                writableNativeSelect.className = "filter-select";
+                [
+                    { value: "", label: t("All points") },
+                    { value: "yes", label: t("Writable only") },
+                    { value: "no", label: t("Read-only only") },
+                ].forEach(option => {
+                    const element = document.createElement("option");
+                    element.value = option.value;
+                    element.textContent = option.label;
+                    if (String(option.value) === String(discoveryFilters.writable || "")) {
+                        element.selected = true;
+                    }
+                    writableNativeSelect.appendChild(element);
+                });
+                writableNativeSelect.addEventListener("change", event => {
+                    discoveryFilters.writable = event.target.value || "";
+                    renderDiscoveredPoints();
+                });
+                writableSelect.appendChild(writableNativeSelect);
+
+                intervalSelect.innerHTML = "";
+                const intervalNativeSelect = document.createElement("select");
+                intervalNativeSelect.className = "filter-select";
+                [
+                    { value: "", label: t("All intervals") },
+                    {
+                        value: COMPLETE_POLL_FILTER_VALUE,
+                        label: `${t("Complete poll interval")} (${Number(currentSettings.pollInterval || 1800)}s)`,
+                    },
+                    ...getIntervalProfileOptions().filter(option => String(option.value || "") !== ""),
+                ].forEach(option => {
+                    const element = document.createElement("option");
+                    element.value = option.value;
+                    element.textContent = option.label;
+                    if (String(option.value) === String(discoveryFilters.intervalProfileId || "")) {
+                        element.selected = true;
+                    }
+                    intervalNativeSelect.appendChild(element);
+                });
+                intervalNativeSelect.addEventListener("change", event => {
+                    discoveryFilters.intervalProfileId = event.target.value || "";
+                    renderDiscoveredPoints();
+                });
+                intervalSelect.appendChild(intervalNativeSelect);
+            }
+
+            function renderDiscoveredPoints() {
+                const body = document.getElementById("discoveredPointCatalogBody");
+                const resultCount = document.getElementById("discoveryResultCount");
+                body.innerHTML = "";
+                renderDiscoveryFilters();
+
+                const entries = getFilteredDiscoveredEntries();
+                if (resultCount) {
+                    resultCount.textContent = `${entries.length} / ${
+                        Array.isArray(currentSettings.discoveredPointCatalog)
+                            ? currentSettings.discoveredPointCatalog.length
+                            : 0
+                    }`;
+                }
+                if (!entries.length) {
+                    const row = document.createElement("tr");
+                    const cell = document.createElement("td");
+                    cell.colSpan = 8;
+                    cell.className = "empty";
+                    cell.textContent = t("No points discovered yet");
+                    row.appendChild(cell);
+                    body.appendChild(row);
+                    return;
+                }
+
+                entries.forEach(entry => {
+                    const row = document.createElement("tr");
+                    row.appendChild(
+                        createCheckboxCell(isPointEnabled(entry), value => {
+                            entry.enabled = value;
+                            if (!value) {
+                                entry.intervalProfileId = "";
+                            }
+                            renderDiscoveredPoints();
+                            markChanged();
+                        }),
+                    );
+                    [
+                        entry.deviceId,
+                        entry.pointId,
+                        entry.title,
+                        formatCurrentValue(entry.currentValue),
+                        entry.unit || "",
+                        entry.writable ? t("Yes") : t("No"),
+                    ].forEach(value => {
+                        const cell = document.createElement("td");
+                        cell.textContent = value == null ? "" : String(value);
+                        row.appendChild(cell);
+                    });
+                    row.appendChild(
+                        createSelectCell(getIntervalProfileOptions(), getAssignedIntervalProfileId(entry), value => {
+                            entry.intervalProfileId = value || "";
+                            entry.enabled = true;
+                            markChanged();
+                        }),
+                    );
+                    body.appendChild(row);
+                });
+                initMaterializeSelects();
+            }
+
+            function renderIntervalProfiles() {
+                const body = document.getElementById("customPollIntervalsBody");
+                body.innerHTML = "";
+
+                const rows = Array.isArray(currentSettings.customPollIntervals)
+                    ? currentSettings.customPollIntervals
+                    : [];
+                rows.forEach((row, index) => {
+                    const tr = document.createElement("tr");
+                    tr.appendChild(
+                        createTextCell(row.name || "", value => {
+                            row.name = value;
+                            scheduleDiscoveredPointsRefresh();
+                            markChanged();
+                        }),
+                    );
+                    tr.appendChild(
+                        createTextCell(
+                            row.intervalSeconds ?? 60,
+                            value => {
+                                row.intervalSeconds = Number(value) || 0;
+                                scheduleDiscoveredPointsRefresh();
+                                markChanged();
+                            },
+                            "number",
+                        ),
+                    );
+                    tr.appendChild(
+                        createActionCell(() => {
+                            requestDeleteIntervalProfile(index);
+                        }),
+                    );
+                    body.appendChild(tr);
+                });
+
+                if (!rows.length) {
+                    const tr = document.createElement("tr");
+                    const td = document.createElement("td");
+                    td.colSpan = 3;
+                    td.className = "empty";
+                    td.textContent = t("No interval profiles configured");
+                    tr.appendChild(td);
+                    body.appendChild(tr);
+                }
+            }
+
+            function closeDeleteProfileModal() {
+                pendingProfileDelete = null;
+                const modal = document.getElementById("deleteProfileModal");
+                if (modal && window.M && window.M.Modal) {
+                    const instance = window.M.Modal.getInstance(modal);
+                    if (instance) {
+                        instance.close();
+                    }
+                }
+            }
+
+            function applyDeleteProfileWithReassignments() {
+                if (!pendingProfileDelete) {
+                    return;
+                }
+
+                const { profileIndex, affectedPoints } = pendingProfileDelete;
+                if (affectedPoints.length) {
+                    const select = document.getElementById("deleteProfileReassignTarget");
+                    const targetIntervalProfileId = select ? select.value || "" : "";
+                    affectedPoints.forEach(point => {
+                        point.intervalProfileId = targetIntervalProfileId;
+                    });
+                }
+
+                currentSettings.customPollIntervals.splice(profileIndex, 1);
+                closeDeleteProfileModal();
+                renderIntervalProfiles();
+                renderDiscoveredPoints();
+                markChanged();
+            }
+
+            function requestDeleteIntervalProfile(profileIndex) {
+                const profiles = Array.isArray(currentSettings.customPollIntervals)
+                    ? currentSettings.customPollIntervals
+                    : [];
+                const profile = profiles[profileIndex];
+                if (!profile) {
+                    return;
+                }
+
+                const affectedPoints = getPointsUsingIntervalProfile(profile.id);
+                pendingProfileDelete = {
+                    profileId: profile.id,
+                    profileIndex,
+                    affectedPoints,
+                };
+
+                const modal = document.getElementById("deleteProfileModal");
+                const title = document.getElementById("deleteProfileModalTitle");
+                const subtitle = document.getElementById("deleteProfileModalText");
+                const body = document.getElementById("deleteProfileModalBody");
+                const confirmButton = document.getElementById("confirmDeleteProfile");
+                const alternativeProfiles = [
+                    {
+                        id: "",
+                        name: t("Complete poll interval"),
+                        intervalSeconds: Number(currentSettings.pollInterval || 1800),
+                    },
+                    ...profiles.filter((entry, index) => index !== profileIndex),
+                ];
+
+                if (!modal || !title || !subtitle || !body || !confirmButton) {
+                    return;
+                }
+
+                title.textContent = `${t("Delete interval profile")} "${profile.name || profile.id}"`;
+                body.innerHTML = "";
+
+                if (!affectedPoints.length) {
+                    subtitle.textContent = t("This profile is not currently used. You can delete it directly.");
+                    const empty = document.createElement("div");
+                    empty.className = "empty";
+                    empty.textContent = t("No points are assigned to this profile.");
+                    body.appendChild(empty);
+                    confirmButton.textContent = t("Delete profile");
+                    confirmButton.disabled = false;
+                } else if (!alternativeProfiles.length) {
+                    subtitle.textContent = t(
+                        "This profile is still used by points. Reassign them before deleting the profile.",
+                    );
+                    const empty = document.createElement("div");
+                    empty.className = "empty";
+                    empty.textContent = t("No alternative interval profile available. Create another profile first.");
+                    body.appendChild(empty);
+                    confirmButton.textContent = t("Delete and reassign");
+                    confirmButton.disabled = true;
+                } else {
+                    subtitle.textContent = t(
+                        "This profile is still used by points. Reassign them before deleting the profile.",
+                    );
+
+                    const reassignmentField = document.createElement("label");
+                    reassignmentField.className = "modal-field";
+                    const reassignmentLabel = document.createElement("span");
+                    reassignmentLabel.textContent = t("Move affected points to");
+                    reassignmentField.appendChild(reassignmentLabel);
+
+                    const select = document.createElement("select");
+                    select.id = "deleteProfileReassignTarget";
+                    alternativeProfiles.forEach((entry, index) => {
+                        const option = document.createElement("option");
+                        option.value = entry.id;
+                        option.textContent = `${entry.name || `${t("Interval profile")} ${entry.id}`} (${Number(
+                            entry.intervalSeconds || 0,
+                        )}s)`;
+                        if (index === 0) {
+                            option.selected = true;
+                        }
+                        select.appendChild(option);
+                    });
+                    reassignmentField.appendChild(select);
+                    body.appendChild(reassignmentField);
+
+                    const tableWrap = document.createElement("div");
+                    tableWrap.className = "table-wrap";
+                    const table = document.createElement("table");
+                    const thead = document.createElement("thead");
+                    const headRow = document.createElement("tr");
+                    [t("Point"), t("Current profile")].forEach(text => {
+                        const th = document.createElement("th");
+                        th.textContent = text;
+                        headRow.appendChild(th);
+                    });
+                    thead.appendChild(headRow);
+                    table.appendChild(thead);
+
+                    const tbody = document.createElement("tbody");
+                    affectedPoints.forEach(point => {
+                        const row = document.createElement("tr");
+                        const pointCell = document.createElement("td");
+                        pointCell.textContent = `${point.title} (${point.deviceId} / ${point.pointId})`;
+                        row.appendChild(pointCell);
+
+                        const currentCell = document.createElement("td");
+                        currentCell.textContent = profile.name || profile.id;
+                        row.appendChild(currentCell);
+                        tbody.appendChild(row);
+                    });
+
+                    table.appendChild(tbody);
+                    tableWrap.appendChild(table);
+                    body.appendChild(tableWrap);
+                    confirmButton.textContent = t("Delete and reassign");
+                    confirmButton.disabled = false;
+                }
+
+                if (window.M && window.M.Modal) {
+                    const instance = window.M.Modal.getInstance(modal);
+                    if (instance) {
+                        instance.open();
+                    }
+                }
+                initMaterializeSelects();
+            }
+
+            function bindBaseInputEvents() {
+                [
+                    "baseUrlProtocol",
+                    "baseUrlHost",
+                    "baseUrlPort",
+                    "username",
+                    "password",
+                    "basicAuth",
+                    "pollInterval",
+                    "writeLockInterval",
+                    "deviceIds",
+                    "ignoreTlsErrors",
+                    "fetchNotifications",
+                ].forEach(id => {
+                    const element = document.getElementById(id);
+                    const eventName = element.type === "checkbox" ? "change" : "input";
+                    element.addEventListener(eventName, () => {
+                        syncBaseInputsToSettings();
+                        syncAuthModeUi();
+                        markChanged();
+                    });
+                });
+            }
+
+            function bindDiscoveryFilterEvents() {
+                const searchInput = document.getElementById("discoveryFilterSearch");
+                const resetButton = document.getElementById("resetDiscoveryFilters");
+
+                if (searchInput) {
+                    searchInput.addEventListener("input", event => {
+                        discoveryFilters.search = event.target.value || "";
+                        renderDiscoveredPoints();
+                    });
+                }
+                if (resetButton) {
+                    resetButton.addEventListener("click", () => {
+                        discoveryFilters = {
+                            search: "",
+                            deviceId: "",
+                            writable: "",
+                            intervalProfileId: "",
+                        };
+                        if (searchInput) {
+                            searchInput.value = "";
+                        }
+                        renderDiscoveredPoints();
+                    });
+                }
+            }
+
+            function load(settings, onChange) {
+                currentOnChange = onChange;
+                currentSettings = Object.assign(
+                    {
+                        baseUrl: "",
+                        username: "",
+                        password: "",
+                        basicAuth: "",
+                        pollInterval: 1800,
+                        writeLockInterval: 120,
+                        discoveredPointCatalog: [],
+                        customPollIntervals: [],
+                        customPointPolls: [],
+                        deviceIds: "",
+                        ignoreTlsErrors: true,
+                        fetchNotifications: true,
+                    },
+                    settings || {},
+                );
+                normalizeIntervalProfiles();
+
+                setBaseInputs(currentSettings);
+                bindBaseInputEvents();
+                bindDiscoveryFilterEvents();
+                renderDiscoveredPoints();
+                renderIntervalProfiles();
+                initMaterializeSelects();
+                initMaterializeModals();
+                onChange(false);
+            }
+
+            function save(callback) {
+                try {
+                    syncBaseInputsToSettings();
+                    normalizeIntervalProfiles();
+
+                    currentSettings = {
+                        baseUrl: currentSettings.baseUrl || "",
+                        username: currentSettings.username || "",
+                        password: currentSettings.password || "",
+                        basicAuth: currentSettings.basicAuth || "",
+                        pollInterval: Number(currentSettings.pollInterval) || 1800,
+                        writeLockInterval: Number(currentSettings.writeLockInterval) || 120,
+                        discoveredPointCatalog: (currentSettings.discoveredPointCatalog || []).map(entry => ({
+                            enabled: entry.enabled !== false,
+                            deviceId: entry.deviceId || "",
+                            pointId: Number(entry.pointId),
+                            title: entry.title || "",
+                            writable: !!entry.writable,
+                            unit: entry.unit || "",
+                            stateId: entry.stateId || "",
+                            currentValue: entry.currentValue ?? null,
+                            intervalProfileId: entry.intervalProfileId || "",
+                        })),
+                        customPollIntervals: (currentSettings.customPollIntervals || [])
+                            .map(entry => ({
+                                id: (entry.id || "").trim(),
+                                name: (entry.name || "").trim(),
+                                intervalSeconds: Number(entry.intervalSeconds) || 0,
+                            }))
+                            .filter(entry => entry.id),
+                        customPointPolls: (currentSettings.discoveredPointCatalog || [])
+                            .map(entry => ({
+                                enabled: entry.enabled !== false && !!entry.intervalProfileId,
+                                deviceId: (entry.deviceId || "").trim(),
+                                pointId: Number(entry.pointId),
+                                intervalProfileId: entry.intervalProfileId || "",
+                            }))
+                            .filter(
+                                entry => entry.enabled && Number.isFinite(entry.pointId) && entry.intervalProfileId,
+                            ),
+                        deviceIds: currentSettings.deviceIds || "",
+                        ignoreTlsErrors: currentSettings.ignoreTlsErrors !== false,
+                        fetchNotifications: currentSettings.fetchNotifications !== false,
+                    };
+
+                    callback(currentSettings);
+                } catch (error) {
+                    window.alert(`Save failed: ${error instanceof Error ? error.message : String(error)}`);
+                    callback(currentSettings);
+                }
+            }
+
+            window.load = load;
+            window.save = save;
+
+            function addIntervalProfile() {
+                currentSettings.customPollIntervals = currentSettings.customPollIntervals || [];
+                currentSettings.customPollIntervals.push({
+                    id: getNextIntervalProfileId(),
+                    name: "",
+                    intervalSeconds: 60,
+                });
+                renderIntervalProfiles();
+                markChanged();
+            }
+
+            let discoveryTimeout = null;
+
+            function refreshDiscovery() {
+                const button = document.getElementById("refreshDiscovery");
+                const status = document.getElementById("discoveryStatus");
+                const targetInstance = getDiscoveryTargetInstance();
+                syncBaseInputsToSettings();
+                const discoveryPayload = {
+                    baseUrl: currentSettings.baseUrl || "",
+                    username: currentSettings.username || "",
+                    password: currentSettings.password || "",
+                    basicAuth: currentSettings.basicAuth || "",
+                    ignoreTlsErrors: currentSettings.ignoreTlsErrors !== false,
+                    deviceIds: currentSettings.deviceIds || "",
+                };
+                button.disabled = true;
+                status.textContent = `${t("Discovery running...")} (${targetInstance})`;
+
+                if (!window.socket || typeof window.socket.emit !== "function") {
+                    button.disabled = false;
+                    status.textContent = t("Admin socket is not available for discovery.");
+                    return;
+                }
+
+                if (discoveryTimeout) {
+                    clearTimeout(discoveryTimeout);
+                }
+                discoveryTimeout = setTimeout(() => {
+                    discoveryTimeout = null;
+                    button.disabled = false;
+                    status.textContent = `${t(
+                        "No discovery response received. Make sure the adapter instance is running and the connection settings are valid.",
+                    )} (${targetInstance})`;
+                }, 15000);
+
+                window.socket.emit("sendTo", targetInstance, "discoverPoints", discoveryPayload, response => {
+                    if (discoveryTimeout) {
+                        clearTimeout(discoveryTimeout);
+                        discoveryTimeout = null;
+                    }
+                    button.disabled = false;
+
+                    if (!Array.isArray(response)) {
+                        const error = response && response.error ? response.error : t("Discovery failed");
+                        status.textContent = error;
+                        return;
+                    }
+
+                    const previousAssignments = new Map(
+                        (currentSettings.discoveredPointCatalog || []).map(entry => [
+                            `${entry.deviceId || ""}:${Number(entry.pointId)}`,
+                            {
+                                enabled: entry.enabled !== false,
+                                intervalProfileId: entry.intervalProfileId || "",
+                            },
+                        ]),
+                    );
+                    currentSettings.discoveredPointCatalog = response.map(entry => {
+                        const preserved = previousAssignments.get(`${entry.deviceId || ""}:${Number(entry.pointId)}`);
+                        return {
+                            ...entry,
+                            enabled: preserved ? preserved.enabled : true,
+                            intervalProfileId: preserved ? preserved.intervalProfileId : "",
+                        };
+                    });
+                    renderDiscoveredPoints();
+                    status.textContent = `${t("Discovery updated")} (${targetInstance})`;
+                    markChanged();
+                });
+            }
+        </script>
+    </head>
+    <body>
+        <div class="m adapter-container">
+            <div class="header">
+                <img
+                    src="nibe-rest-api-wide.png"
+                    class="logo"
+                    alt="NIBE REST API"
+                />
+                <div class="header-text">
+                    <h2>NIBE REST API</h2>
+                    <p class="translate">Custom polling profiles and point assignments for faster updates.</p>
+                </div>
+            </div>
+
+            <section class="card">
+                <h3 class="translate">Connection</h3>
+                <div class="form-grid">
+                    <label>
+                        <span class="translate">Protocol</span>
+                        <select id="baseUrlProtocol">
+                            <option value="https">https</option>
+                            <option value="http">http</option>
+                        </select>
+                    </label>
+                    <label>
+                        <span class="translate">Address</span>
+                        <input
+                            id="baseUrlHost"
+                            type="text"
+                            placeholder="192.168.0.100"
+                        />
+                    </label>
+                    <label>
+                        <span class="translate">Port</span>
+                        <input
+                            id="baseUrlPort"
+                            type="number"
+                            min="1"
+                            max="65535"
+                            placeholder="8443"
+                        />
+                    </label>
+                    <div class="break"></div>
+                    <div
+                        id="userPassGroup"
+                        class="auth-group"
+                    >
+                        <label>
+                            <span class="translate">Username</span>
+                            <input
+                                id="username"
+                                type="text"
+                            />
+                        </label>
+                        <label>
+                            <span class="translate">Password</span>
+                            <input
+                                id="password"
+                                type="password"
+                            />
+                        </label>
+                    </div>
+                    <div
+                        id="basicAuthGroup"
+                        class="auth-group"
+                    >
+                        <label>
+                            <span class="translate">Basic auth hash</span>
+                            <input
+                                id="basicAuth"
+                                type="text"
+                            />
+                        </label>
+                    </div>
+                    <p class="hint auth-hint translate">Use either username/password or a basic auth hash.</p>
+                    <div class="break"></div>
+                    <label>
+                        <span class="translate">Complete poll interval (seconds)</span>
+                        <input
+                            id="pollInterval"
+                            type="number"
+                            min="10"
+                        />
+                    </label>
+                    <label>
+                        <span class="translate">Write lock interval (seconds)</span>
+                        <input
+                            id="writeLockInterval"
+                            type="number"
+                            min="0"
+                        />
+                    </label>
+                    <p class="hint field-hint translate">
+                        Recommended to keep a write lock interval to avoid excessive writes, which could damage the
+                        EEPROM of the device.
+                    </p>
+                    <label class="wide">
+                        <span class="translate">Device IDs</span>
+                        <input
+                            id="deviceIds"
+                            type="text"
+                            placeholder="Optional comma-separated list"
+                        />
+                    </label>
+                    <label class="checkbox">
+                        <input
+                            class="filled-in"
+                            id="ignoreTlsErrors"
+                            type="checkbox"
+                        />
+                        <span class="translate">Ignore TLS certificate errors</span>
+                    </label>
+                    <label class="checkbox">
+                        <input
+                            class="filled-in"
+                            id="fetchNotifications"
+                            type="checkbox"
+                        />
+                        <span class="translate">Fetch notifications</span>
+                    </label>
+                </div>
+            </section>
+
+            <section class="card">
+                <div class="section-header">
+                    <div>
+                        <h3 class="translate">Custom poll intervals</h3>
+                        <p class="hint translate">
+                            Create reusable interval profiles and assign them directly in the discovered points list
+                            below.
+                        </p>
+                    </div>
+                    <div class="actions">
+                        <button
+                            type="button"
+                            onclick="addIntervalProfile()"
+                            class="primary translate"
+                        >
+                            Add interval profile
+                        </button>
+                    </div>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th class="translate">Profile name</th>
+                                <th class="translate">Interval (seconds)</th>
+                                <th class="translate">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="customPollIntervalsBody"></tbody>
+                    </table>
+                </div>
+            </section>
+
+            <div
+                id="deleteProfileModal"
+                class="modal nibe-modal"
+            >
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h3
+                            id="deleteProfileModalTitle"
+                            class="translate"
+                        >
+                            Delete interval profile
+                        </h3>
+                    </div>
+                    <p
+                        id="deleteProfileModalText"
+                        class="hint translate"
+                    ></p>
+                    <div
+                        id="deleteProfileModalBody"
+                        class="modal-body"
+                    ></div>
+                </div>
+                <div class="modal-footer">
+                    <button
+                        type="button"
+                        onclick="closeDeleteProfileModal()"
+                        class="modal-close btn-flat translate"
+                    >
+                        Cancel
+                    </button>
+                    <button
+                        id="confirmDeleteProfile"
+                        type="button"
+                        onclick="applyDeleteProfileWithReassignments()"
+                        class="btn primary translate"
+                    >
+                        Delete and reassign
+                    </button>
+                </div>
+            </div>
+
+            <section class="card">
+                <div class="section-header">
+                    <div>
+                        <h3 class="translate">Discovered points</h3>
+                        <p class="hint translate">
+                            Discovery uses the currently running adapter instance. Save and restart first if you changed
+                            connection settings.
+                        </p>
+                        <p class="hint translate">
+                            If discovery does not return, the adapter instance is usually not running yet or cannot
+                            reach the configured NIBE API.
+                        </p>
+                    </div>
+                    <div class="actions">
+                        <button
+                            id="refreshDiscovery"
+                            type="button"
+                            onclick="refreshDiscovery()"
+                            class="primary translate"
+                        >
+                            Refresh discovery
+                        </button>
+                    </div>
+                </div>
+                <div
+                    id="discoveryStatus"
+                    class="status"
+                ></div>
+                <div class="filter-bar">
+                    <label class="filter-field">
+                        <span class="translate">Search points</span>
+                        <input
+                            id="discoveryFilterSearch"
+                            type="text"
+                            placeholder="Title, point ID, value..."
+                        />
+                    </label>
+                    <label class="filter-field">
+                        <span class="translate">Device filter</span>
+                        <div
+                            id="discoveryFilterDeviceId"
+                            class="select-host"
+                        ></div>
+                    </label>
+                    <label class="filter-field">
+                        <span class="translate">Writable filter</span>
+                        <div
+                            id="discoveryFilterWritable"
+                            class="select-host"
+                        ></div>
+                    </label>
+                    <label class="filter-field">
+                        <span class="translate">Interval filter</span>
+                        <div
+                            id="discoveryFilterIntervalProfileId"
+                            class="select-host"
+                        ></div>
+                    </label>
+                    <div class="filter-actions">
+                        <button
+                            id="enableAllFilteredPoints"
+                            type="button"
+                            onclick="setAllFilteredPointsEnabled(true)"
+                            class="translate"
+                        >
+                            Select all
+                        </button>
+                        <button
+                            id="disableAllFilteredPoints"
+                            type="button"
+                            onclick="setAllFilteredPointsEnabled(false)"
+                            class="translate"
+                        >
+                            Deselect all
+                        </button>
+                        <button
+                            id="resetDiscoveryFilters"
+                            type="button"
+                            class="translate"
+                        >
+                            Reset filters
+                        </button>
+                        <span
+                            id="discoveryResultCount"
+                            class="result-count"
+                        ></span>
+                    </div>
+                </div>
+                <div class="table-wrap table-wrap-scroll">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th class="translate">Enabled</th>
+                                <th class="translate">Device ID</th>
+                                <th class="translate">Point ID</th>
+                                <th class="translate">Title</th>
+                                <th class="translate">Current value</th>
+                                <th class="translate">Unit</th>
+                                <th class="translate">Writable</th>
+                                <th class="translate">Interval profile</th>
+                            </tr>
+                        </thead>
+                        <tbody id="discoveredPointCatalogBody"></tbody>
+                    </table>
+                </div>
+            </section>
+        </div>
+    </body>
+</html>

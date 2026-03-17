@@ -59,10 +59,11 @@
         "mode": "daemon",
         "type": "climate-control",
         "compact": true,
+        "messagebox": true,
         "connectionType": "local",
         "dataSource": "poll",
         "adminUI": {
-            "config": "json"
+            "config": "html"
         },
         "dependencies": [
             {
@@ -80,8 +81,17 @@
         "username": "",
         "password": "",
         "basicAuth": "",
-        "pollInterval": 60,
+        "pollInterval": 1800,
         "writeLockInterval": 120,
+        "discoveredPointCatalog": [],
+        "customPollIntervals": [
+            {
+                "id": "full",
+                "name": "Use full poll interval",
+                "intervalSeconds": 60
+            }
+        ],
+        "customPointPolls": [],
         "deviceIds": "",
         "ignoreTlsErrors": true,
         "fetchNotifications": true
