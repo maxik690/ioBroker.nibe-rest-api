@@ -10,6 +10,7 @@
   "homepage": "https://github.com/maxik690/ioBroker.nibe-rest-api",
   "license": "MIT",
   "keywords": [
+    "ioBroker",
     "Nibe",
     "S1155",
     "iot",

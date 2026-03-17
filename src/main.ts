@@ -107,12 +107,22 @@ interface DeviceModeDescriptor {
     kind: "aidMode" | "smartMode";
 }
 
+interface NormalizedPointEntry {
+    pointId: number;
+    point: PointValue;
+}
+
+interface ErrorResponsePayload {
+    error?: string;
+}
+
 type PointWriteResultValue = string | number | boolean | Record<string, unknown> | null;
 
 const INVISIBLE_WORD_JOINERS =
-    /[\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180B-\u180D\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFE00-\uFE0F\uFEFF]/g;
+    /\u00AD|\u034F|\u061C|\u115F|\u1160|\u17B4|\u17B5|\u180B|\u180C|\u180D|\u200B|\u200C|\u200D|\u200E|\u200F|\u202A|\u202B|\u202C|\u202D|\u202E|\u2060|\u2061|\u2062|\u2063|\u2064|\u2065|\u2066|\u2067|\u2068|\u2069|\u206A|\u206B|\u206C|\u206D|\u206E|\u206F|\uFE00|\uFE01|\uFE02|\uFE03|\uFE04|\uFE05|\uFE06|\uFE07|\uFE08|\uFE09|\uFE0A|\uFE0B|\uFE0C|\uFE0D|\uFE0E|\uFE0F|\uFEFF/gu;
 const COMBINING_MARKS = /[\u0300-\u036f]/g;
 
+/** ioBroker adapter for synchronizing NIBE heat pump data via the local REST API. */
 export class NibeRestApi extends utils.Adapter {
     private pollTimer: ioBroker.Timeout | undefined;
     private pollInProgress = false;
@@ -121,6 +131,11 @@ export class NibeRestApi extends utils.Adapter {
     private readonly loggedUnknownPointShapes = new Set<string>();
     private readonly lastSuccessfulWrites = new Map<string, number>();
 
+    /**
+     * Creates the adapter instance with the standard ioBroker lifecycle handlers.
+     *
+     * @param options Adapter options supplied by ioBroker during startup or tests.
+     */
     public constructor(options: Partial<utils.AdapterOptions> = {}) {
         super({
             ...options,
@@ -410,7 +425,7 @@ export class NibeRestApi extends utils.Adapter {
         const pointsPreparationStartedAt = Date.now();
 
         let skippedPoints = 0;
-        const normalizedPoints: Array<{ pointId: number; point: PointValue }> = [];
+        const normalizedPoints: NormalizedPointEntry[] = [];
 
         for (const [pointKey, rawPoint] of Object.entries(points)) {
             const pointId = Number(pointKey);
@@ -772,7 +787,7 @@ export class NibeRestApi extends utils.Adapter {
                         if (statusCode < 200 || statusCode >= 300) {
                             let message = `HTTP ${statusCode}`;
                             try {
-                                const parsed = rawData ? (JSON.parse(rawData) as { error?: string }) : undefined;
+                                const parsed = rawData ? (JSON.parse(rawData) as ErrorResponsePayload) : undefined;
                                 if (parsed?.error) {
                                     message = parsed.error;
                                 }
@@ -1011,7 +1026,7 @@ export class NibeRestApi extends utils.Adapter {
         try {
             return JSON.stringify(value);
         } catch {
-            return String(value);
+            return Object.prototype.toString.call(value);
         }
     }
 
@@ -1031,7 +1046,7 @@ export class NibeRestApi extends utils.Adapter {
         try {
             return JSON.stringify(value);
         } catch {
-            return String(value);
+            return Object.prototype.toString.call(value);
         }
     }
 

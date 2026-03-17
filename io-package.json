@@ -87,6 +87,7 @@
         "fetchNotifications": true
     },
     "protectedNative": ["password"],
+    "encryptedNative": ["password"],
     "objects": [],
     "instanceObjects": [
         {

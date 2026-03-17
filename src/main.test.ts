@@ -10,17 +10,17 @@ describe("point state id normalization", () => {
 
     it("removes invisible separators inside words", () => {
         const softHyphenTitle = `Com${String.fromCharCode(0x00ad)}pressor fre${String.fromCharCode(0x00ad)}quency`;
-        const stateId = (adapter as unknown as { getPointStateBaseName: (title: string) => string }).getPointStateBaseName(
-            softHyphenTitle,
-        );
+        const stateId = (
+            adapter as unknown as { getPointStateBaseName: (title: string) => string }
+        ).getPointStateBaseName(softHyphenTitle);
 
         expect(stateId).to.equal("Compressor_frequency");
     });
 
     it("strips accents while keeping readable ids", () => {
-        const stateId = (adapter as unknown as { getPointStateBaseName: (title: string) => string }).getPointStateBaseName(
-            "Värmebärare temperatur",
-        );
+        const stateId = (
+            adapter as unknown as { getPointStateBaseName: (title: string) => string }
+        ).getPointStateBaseName("Värmebärare temperatur");
 
         expect(stateId).to.equal("Varmebarare_temperatur");
     });
