@@ -71,7 +71,7 @@
         ],
         "globalDependencies": [
             {
-                "admin": ">=7.0.23"
+                "admin": ">=7.6.20"
             }
         ]
     },
@@ -86,6 +86,7 @@
         "ignoreTlsErrors": true,
         "fetchNotifications": true
     },
+    "protectedNative": ["password"],
     "objects": [],
     "instanceObjects": [
         {
