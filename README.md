@@ -140,6 +140,10 @@ The ioBroker.admin interface will then be available at http://localhost:undefine
 
 Please refer to the [`dev-server` documentation](https://github.com/ioBroker/dev-server#command-line) for more details.
 
+## Acknowledgements
+
+Special thanks to Matthias Kleine from haus-automatisierung.com for inspiration and valuable input around ioBroker and other home automation topics and to OpenAI Codex for support during development.
+
 ## Changelog
 
 <!--

@@ -83,15 +83,11 @@
         "basicAuth": "",
         "pollInterval": 1800,
         "writeLockInterval": 120,
+        "stateUpdateMode": "onValueChange",
         "discoveredPointCatalog": [],
-        "customPollIntervals": [
-            {
-                "id": "full",
-                "name": "Use full poll interval",
-                "intervalSeconds": 60
-            }
-        ],
+        "customPollIntervals": [],
         "customPointPolls": [],
+        "deviceDisplayNames": [],
         "deviceIds": "",
         "ignoreTlsErrors": true,
         "fetchNotifications": true

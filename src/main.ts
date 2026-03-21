@@ -123,6 +123,7 @@ interface ErrorResponsePayload {
 
 interface DiscoveredPointCatalogEntry {
     deviceId: string;
+    deviceName: string;
     pointId: number;
     title: string;
     writable: boolean;
@@ -136,11 +137,23 @@ interface SelectOption {
     label: string;
 }
 
+interface KnownDeviceEntry {
+    deviceId: string;
+    deviceName: string;
+}
+
 interface CustomPointPollScheduleEntry {
     enabled: boolean;
     deviceId?: string;
     pointId: number;
     intervalMs: number;
+}
+
+interface ConfiguredCustomPointPollEntry {
+    enabled: boolean;
+    deviceId?: string;
+    pointId: number;
+    intervalProfileId?: string;
 }
 
 interface DiscoveryRequestConfig {
@@ -161,6 +174,7 @@ interface MessagePayload {
 
 type PointWriteResultValue = string | number | boolean | Record<string, unknown> | null;
 type CachedStateSnapshot = Pick<ioBroker.SettableState, "val" | "ack" | "q">;
+const NO_ENABLED_DEVICES_MARKER = "__none__";
 
 const INVISIBLE_WORD_JOINERS =
     /\u00AD|\u034F|\u061C|\u115F|\u1160|\u17B4|\u17B5|\u180B|\u180C|\u180D|\u200B|\u200C|\u200D|\u200E|\u200F|\u202A|\u202B|\u202C|\u202D|\u202E|\u2060|\u2061|\u2062|\u2063|\u2064|\u2065|\u2066|\u2067|\u2068|\u2069|\u206A|\u206B|\u206C|\u206D|\u206E|\u206F|\uFE00|\uFE01|\uFE02|\uFE03|\uFE04|\uFE05|\uFE06|\uFE07|\uFE08|\uFE09|\uFE0A|\uFE0B|\uFE0C|\uFE0D|\uFE0E|\uFE0F|\uFEFF/gu;
@@ -197,6 +211,7 @@ export class NibeRestApi extends utils.Adapter {
 
         this.on("ready", this.onReady.bind(this));
         this.on("stateChange", this.onStateChange.bind(this));
+        this.on("objectChange", this.onObjectChange.bind(this));
         this.on("unload", this.onUnload.bind(this));
         this.on("message" as never, this.onMessage.bind(this) as never);
     }
@@ -239,6 +254,7 @@ export class NibeRestApi extends utils.Adapter {
         }
 
         this.subscribeStates("devices.*");
+        this.subscribeForeignObjects(`system.adapter.${this.namespace}`);
         await this.cleanupDisabledConfiguredPoints();
         this.logLoadedCustomPollSchedules();
         await this.pollApi();
@@ -292,6 +308,39 @@ export class NibeRestApi extends utils.Adapter {
         }
     }
 
+    private async onObjectChange(id: string, obj: ioBroker.Object | null | undefined): Promise<void> {
+        if (id !== `system.adapter.${this.namespace}` || !obj || obj.type !== "instance") {
+            return;
+        }
+
+        const native = this.isRecord(obj.native) ? (obj.native as unknown as ioBroker.AdapterConfig) : undefined;
+        if (!native) {
+            return;
+        }
+
+        this.config = native;
+        await this.cleanupStaleDeviceFolders(native);
+        await this.cleanupDisabledConfiguredPoints(native);
+        this.log.debug("Applied updated adapter config and cleaned up non-selected points");
+
+        if (!this.config.baseUrl?.trim() || !this.getAuthorizationHeaderValue()) {
+            this.log.debug("Skipping immediate sync after config save because connection settings are incomplete");
+            return;
+        }
+
+        if (this.pollInProgress) {
+            this.log.debug("Config updated while polling was in progress. New points will be synced in the current or next cycle");
+            return;
+        }
+
+        this.log.debug("Triggering immediate sync after config save");
+        if (this.pollTimer) {
+            clearTimeout(this.pollTimer);
+            this.pollTimer = undefined;
+        }
+        void this.pollApi();
+    }
+
     private async onMessage(obj: MessagePayload): Promise<void> {
         if (!obj.command) {
             return;
@@ -322,6 +371,12 @@ export class NibeRestApi extends utils.Adapter {
                 const deviceId = this.readString(payload.deviceId)?.trim();
                 const options = await this.getDiscoveredPointOptions(deviceId);
                 this.sendMessageResponse(obj, options);
+                return;
+            }
+
+            if (obj.command === "getKnownDevices") {
+                const devices = await this.getKnownDevicesFromObjects();
+                this.sendMessageResponse(obj, devices);
                 return;
             }
 
@@ -467,6 +522,7 @@ export class NibeRestApi extends utils.Adapter {
 
         for (const device of devices) {
             const deviceId = device.product.serialNumber || String(device.deviceIndex);
+            const deviceName = device.product.name || deviceId;
             const points = await this.apiRequest<PointsResponse>(
                 {
                     path: `/api/v1/devices/${encodeURIComponent(deviceId)}/points`,
@@ -487,10 +543,11 @@ export class NibeRestApi extends utils.Adapter {
 
                 catalog.push({
                     deviceId,
+                    deviceName,
                     pointId,
                     title: point.title || `Point ${pointId}`,
                     writable: point.metadata.isWritable,
-                    unit: point.metadata.shortUnit || point.metadata.unit || "",
+                    unit: this.normalizePointUnit(point.metadata.shortUnit || point.metadata.unit),
                     stateId: this.getPointStateBaseName(point.title),
                     currentValue: this.convertPointToStateValue(point),
                 });
@@ -508,6 +565,27 @@ export class NibeRestApi extends utils.Adapter {
     private async buildDiscoveredPointCatalogFromObjects(): Promise<DiscoveredPointCatalogEntry[]> {
         const objects = await this.getAdapterObjectsAsync();
         const catalog: DiscoveredPointCatalogEntry[] = [];
+        const productNamesByDeviceId = new Map<string, string>();
+
+        for (const [objectId, object] of Object.entries(objects)) {
+            if (object.type !== "state" || !objectId.endsWith(".product.name") || !this.isRecord(object.native)) {
+                continue;
+            }
+
+            const deviceId = this.readString(object.native.deviceId)?.trim();
+            if (!deviceId) {
+                continue;
+            }
+
+            const stateId = objectId.startsWith(`${this.namespace}.`)
+                ? objectId.slice(this.namespace.length + 1)
+                : objectId;
+            const state = await this.getStateAsync(stateId).catch(() => null);
+            const productName = this.readString(state?.val)?.trim();
+            if (productName) {
+                productNamesByDeviceId.set(deviceId, productName);
+            }
+        }
 
         for (const [, object] of Object.entries(objects)) {
             if (object.type !== "state" || !this.isRecord(object.native)) {
@@ -528,13 +606,17 @@ export class NibeRestApi extends utils.Adapter {
                       : undefined;
             const title = this.readString(object.native.title)?.trim() || commonName || `Point ${pointId}`;
             const isWritable = object.common.write === true;
-            const unit = typeof object.common.unit === "string" ? object.common.unit : "";
+            const unit = typeof object.common.unit === "string" ? this.normalizePointUnit(object.common.unit) : "";
             const stateId = object._id.startsWith(`${this.namespace}.`)
                 ? object._id.slice(this.namespace.length + 1)
                 : object._id;
 
             catalog.push({
                 deviceId,
+                deviceName:
+                    this.readString(object.native.deviceName)?.trim() ||
+                    productNamesByDeviceId.get(deviceId) ||
+                    deviceId,
                 pointId,
                 title,
                 writable: isWritable,
@@ -562,6 +644,32 @@ export class NibeRestApi extends utils.Adapter {
             }));
     }
 
+    private async getKnownDevicesFromObjects(): Promise<KnownDeviceEntry[]> {
+        const objects = await this.getAdapterObjectsAsync();
+        const devices = new Map<string, string>();
+
+        for (const [objectId, object] of Object.entries(objects)) {
+            if (object.type !== "state" || !objectId.endsWith(".product.name") || !this.isRecord(object.native)) {
+                continue;
+            }
+
+            const deviceId = this.readString(object.native.deviceId)?.trim();
+            if (!deviceId) {
+                continue;
+            }
+
+            const stateId = objectId.startsWith(`${this.namespace}.`)
+                ? objectId.slice(this.namespace.length + 1)
+                : objectId;
+            const state = await this.getStateAsync(stateId).catch(() => null);
+            devices.set(deviceId, this.readString(state?.val)?.trim() || deviceId);
+        }
+
+        return Array.from(devices.entries())
+            .map(([deviceId, deviceName]) => ({ deviceId, deviceName }))
+            .sort((left, right) => left.deviceName.localeCompare(right.deviceName) || left.deviceId.localeCompare(right.deviceId));
+    }
+
     private getIntervalProfileOptions(): SelectOption[] {
         return [
             {
@@ -583,6 +691,10 @@ export class NibeRestApi extends utils.Adapter {
             .map(id => id.trim())
             .filter(Boolean);
 
+        if (configuredIds?.includes(NO_ENABLED_DEVICES_MARKER)) {
+            return [];
+        }
+
         if (!configuredIds?.length) {
             return devices;
         }
@@ -595,10 +707,11 @@ export class NibeRestApi extends utils.Adapter {
 
     private async syncDevice(device: DeviceSummary): Promise<void> {
         const deviceId = device.product.serialNumber || String(device.deviceIndex);
-        const devicePath = `devices.${this.sanitizeSegment(deviceId)}`;
+        const deviceDisplayName = this.getDeviceDisplayName(deviceId, this.config, device.product.name || deviceId);
+        const devicePath = this.getDevicePath(deviceId, this.config);
         const syncStartedAt = Date.now();
 
-        await this.ensureDeviceObjects(devicePath);
+        await this.ensureDeviceObjects(devicePath, deviceId, deviceDisplayName);
         await this.syncDeviceSummary(devicePath, deviceId, device);
         await this.syncPoints(devicePath, deviceId);
 
@@ -609,20 +722,23 @@ export class NibeRestApi extends utils.Adapter {
         this.log.debug(`Poll device ${deviceId} synchronized in ${Date.now() - syncStartedAt}ms`);
     }
 
-    private async ensureDeviceObjects(devicePath: string): Promise<void> {
-        await this.upsertChannel(devicePath, "Device");
-        await this.upsertChannel(`${devicePath}.product`, "Product");
-        await this.upsertChannel(`${devicePath}.points`, "Points");
-        await this.upsertChannel(`${devicePath}.points.readOnly`, "Read-only points");
-        await this.upsertChannel(`${devicePath}.points.writable`, "Writable points");
-        await this.upsertChannel(`${devicePath}.notifications`, "Notifications");
+    private async ensureDeviceObjects(devicePath: string, deviceId: string, deviceDisplayName: string): Promise<void> {
+        await this.upsertChannel(devicePath, deviceDisplayName || "Device", {
+            deviceId,
+            isDeviceRoot: true,
+        });
+        await this.upsertChannel(`${devicePath}.product`, "Product", { deviceId });
+        await this.upsertChannel(`${devicePath}.points`, "Points", { deviceId });
+        await this.upsertChannel(`${devicePath}.points.readOnly`, "Read-only points", { deviceId });
+        await this.upsertChannel(`${devicePath}.points.writable`, "Writable points", { deviceId });
+        await this.upsertChannel(`${devicePath}.notifications`, "Notifications", { deviceId });
     }
 
-    private async upsertChannel(id: string, name: string): Promise<void> {
+    private async upsertChannel(id: string, name: string, native: Record<string, unknown> = {}): Promise<void> {
         const channelDefinition: ioBroker.SettableObject = {
             type: "channel",
             common: { name },
-            native: {},
+            native,
         };
         await this.upsertObjectIfNeeded(id, channelDefinition);
     }
@@ -634,6 +750,7 @@ export class NibeRestApi extends utils.Adapter {
             type: "number",
             read: true,
             write: false,
+            native: { deviceId },
         });
         await this.upsertState(`${devicePath}.aidMode`, {
             name: "Aid mode",
@@ -645,6 +762,7 @@ export class NibeRestApi extends utils.Adapter {
                 off: "off",
                 on: "on",
             },
+            native: { deviceId },
         });
         await this.upsertState(`${devicePath}.smartMode`, {
             name: "Smart mode",
@@ -656,6 +774,7 @@ export class NibeRestApi extends utils.Adapter {
                 normal: "normal",
                 away: "away",
             },
+            native: { deviceId },
         });
         await this.upsertState(`${devicePath}.product.serialNumber`, {
             name: "Serial number",
@@ -663,6 +782,7 @@ export class NibeRestApi extends utils.Adapter {
             type: "string",
             read: true,
             write: false,
+            native: { deviceId },
         });
         await this.upsertState(`${devicePath}.product.name`, {
             name: "Name",
@@ -670,6 +790,7 @@ export class NibeRestApi extends utils.Adapter {
             type: "string",
             read: true,
             write: false,
+            native: { deviceId },
         });
         await this.upsertState(`${devicePath}.product.manufacturer`, {
             name: "Manufacturer",
@@ -677,6 +798,7 @@ export class NibeRestApi extends utils.Adapter {
             type: "string",
             read: true,
             write: false,
+            native: { deviceId },
         });
         await this.upsertState(`${devicePath}.product.firmwareId`, {
             name: "Firmware ID",
@@ -684,6 +806,7 @@ export class NibeRestApi extends utils.Adapter {
             type: "string",
             read: true,
             write: false,
+            native: { deviceId },
         });
 
         this.deviceModes.set(`${devicePath}.aidMode`, { deviceId, kind: "aidMode" });
@@ -753,7 +876,7 @@ export class NibeRestApi extends utils.Adapter {
                 type: this.determineIoBrokerType(point.metadata),
                 read: true,
                 write: point.metadata.isWritable,
-                unit: point.metadata.shortUnit || point.metadata.unit || undefined,
+                unit: this.normalizePointUnit(point.metadata.shortUnit || point.metadata.unit) || undefined,
                 desc: this.buildPointDescription(point.description, pointId),
                 native: {
                     pointId,
@@ -1331,7 +1454,7 @@ export class NibeRestApi extends utils.Adapter {
                 .map(entry => [entry.id?.trim() ?? "", Number(entry.intervalSeconds) * 1000]),
         );
 
-        return (this.config.customPointPolls ?? [])
+        return this.getConfiguredCustomPointPollEntries()
             .map(entry => ({
                 enabled: entry.enabled !== false,
                 deviceId: entry.deviceId?.trim() || undefined,
@@ -1343,22 +1466,78 @@ export class NibeRestApi extends utils.Adapter {
             );
     }
 
-    private isDiscoveredPointEnabled(deviceId: string, pointId: number): boolean {
-        const configuredPoint = (this.config.discoveredPointCatalog ?? []).find(
-            entry => entry.deviceId?.trim() === deviceId && Number(entry.pointId) === pointId,
-        );
-        return configuredPoint?.enabled !== false;
+    private getConfiguredCustomPointPollEntries(): ConfiguredCustomPointPollEntry[] {
+        const configuredEntries = new Map<string, ConfiguredCustomPointPollEntry>();
+
+        for (const entry of this.config.discoveredPointCatalog ?? []) {
+            const deviceId = entry.deviceId?.trim();
+            const pointId = Number(entry.pointId);
+            const intervalProfileId = entry.intervalProfileId?.trim();
+
+            if (!deviceId || !Number.isFinite(pointId) || pointId <= 0 || !intervalProfileId) {
+                continue;
+            }
+
+            configuredEntries.set(`${deviceId}:${pointId}`, {
+                enabled: entry.enabled !== false,
+                deviceId,
+                pointId,
+                intervalProfileId,
+            });
+        }
+
+        for (const entry of this.config.customPointPolls ?? []) {
+            const deviceId = entry.deviceId?.trim();
+            const pointId = Number(entry.pointId);
+            const intervalProfileId = entry.intervalProfileId?.trim();
+            const key = `${deviceId ?? "*"}:${pointId}`;
+
+            if (!Number.isFinite(pointId) || pointId <= 0 || !intervalProfileId) {
+                continue;
+            }
+
+            configuredEntries.set(key, {
+                enabled: entry.enabled !== false,
+                deviceId,
+                pointId,
+                intervalProfileId,
+            });
+        }
+
+        return [...configuredEntries.values()];
     }
 
-    private async cleanupDisabledConfiguredPoints(): Promise<void> {
-        const disabledPointKeys = new Set(
-            (this.config.discoveredPointCatalog ?? [])
-                .filter(entry => entry.enabled === false && entry.deviceId?.trim() && Number.isFinite(entry.pointId))
-                .map(entry => `${entry.deviceId?.trim()}:${Number(entry.pointId)}`),
+    private isDiscoveredPointEnabled(
+        deviceId: string,
+        pointId: number,
+        config: ioBroker.AdapterConfig = this.config,
+    ): boolean {
+        const configuredPoints = (config.discoveredPointCatalog ?? []).filter(
+            entry => entry.deviceId?.trim() && Number.isFinite(entry.pointId),
         );
-        if (!disabledPointKeys.size) {
+        if (!configuredPoints.length) {
+            return true;
+        }
+
+        const configuredPoint = configuredPoints.find(
+            entry => entry.deviceId?.trim() === deviceId && Number(entry.pointId) === pointId,
+        );
+        return configuredPoint?.enabled !== false && !!configuredPoint;
+    }
+
+    private async cleanupDisabledConfiguredPoints(config: ioBroker.AdapterConfig = this.config): Promise<void> {
+        const configuredPoints = (config.discoveredPointCatalog ?? []).filter(
+            entry => entry.deviceId?.trim() && Number.isFinite(entry.pointId),
+        );
+        if (!configuredPoints.length) {
             return;
         }
+
+        const enabledPointKeys = new Set(
+            configuredPoints
+                .filter(entry => entry.enabled !== false)
+                .map(entry => `${entry.deviceId?.trim()}:${Number(entry.pointId)}`),
+        );
 
         const objects = await this.getAdapterObjectsAsync();
         let removedCount = 0;
@@ -1375,7 +1554,7 @@ export class NibeRestApi extends utils.Adapter {
             }
 
             const pointKey = `${deviceId}:${pointId}`;
-            if (!disabledPointKeys.has(pointKey)) {
+            if (enabledPointKeys.has(pointKey)) {
                 continue;
             }
 
@@ -1394,7 +1573,152 @@ export class NibeRestApi extends utils.Adapter {
         }
 
         if (removedCount > 0) {
-            this.log.debug(`Removed ${removedCount} disabled point state(s) from objects/states`);
+            this.log.debug(`Removed ${removedCount} non-selected point state(s) from objects/states`);
+        }
+    }
+
+
+    private getConfiguredDeviceDisplayName(
+        deviceId: string,
+        config: ioBroker.AdapterConfig = this.config,
+    ): string | undefined {
+        return config.deviceDisplayNames
+            ?.find(entry => entry.deviceId?.trim() === deviceId)
+            ?.displayName?.trim();
+    }
+
+    private getCatalogDeviceDisplayName(
+        deviceId: string,
+        config: ioBroker.AdapterConfig = this.config,
+    ): string | undefined {
+        return config.discoveredPointCatalog
+            ?.find(entry => entry.deviceId?.trim() === deviceId)
+            ?.deviceName?.trim();
+    }
+
+    private getDeviceDisplayName(
+        deviceId: string,
+        config: ioBroker.AdapterConfig = this.config,
+        fallback?: string,
+    ): string {
+        return (
+            this.getConfiguredDeviceDisplayName(deviceId, config) ||
+            this.getCatalogDeviceDisplayName(deviceId, config) ||
+            fallback ||
+            deviceId
+        );
+    }
+
+    private getDevicePath(
+        deviceId: string,
+        config: ioBroker.AdapterConfig = this.config,
+        fallbackDisplayName?: string,
+    ): string {
+        const folderBaseName = this.getDeviceDisplayName(deviceId, config, fallbackDisplayName);
+        const folderSegment = this.sanitizeSegment(folderBaseName);
+        return `devices.${folderSegment || this.sanitizeSegment(deviceId)}`;
+    }
+
+    private clearCachesForPrefix(prefix: string): void {
+        for (const key of Array.from(this.stateValueCache.keys())) {
+            if (key === prefix || key.startsWith(`${prefix}.`)) {
+                this.stateValueCache.delete(key);
+            }
+        }
+        for (const key of Array.from(this.objectDefinitionCache.keys())) {
+            if (key === prefix || key.startsWith(`${prefix}.`)) {
+                this.objectDefinitionCache.delete(key);
+            }
+        }
+        for (const key of Array.from(this.pointStateDescriptors.keys())) {
+            if (key === prefix || key.startsWith(`${prefix}.`)) {
+                this.pointStateDescriptors.delete(key);
+            }
+        }
+        for (const key of Array.from(this.writablePoints.keys())) {
+            if (key === prefix || key.startsWith(`${prefix}.`)) {
+                this.writablePoints.delete(key);
+            }
+        }
+        for (const key of Array.from(this.deviceModes.keys())) {
+            if (key === prefix || key.startsWith(`${prefix}.`)) {
+                this.deviceModes.delete(key);
+            }
+        }
+        for (const [key, value] of Array.from(this.pointStateIndex.entries())) {
+            if (value === prefix || value.startsWith(`${prefix}.`)) {
+                this.pointStateIndex.delete(key);
+            }
+        }
+    }
+
+    private async removeAdapterObjectsByPrefix(relativePrefix: string): Promise<number> {
+        const fullPrefix = `${this.namespace}.${relativePrefix}`;
+        const objects = await this.getAdapterObjectsAsync();
+        const matchingObjectIds = Object.keys(objects)
+            .filter(objectId => objectId === fullPrefix || objectId.startsWith(`${fullPrefix}.`))
+            .sort((left, right) => right.length - left.length);
+
+        if (!matchingObjectIds.length) {
+            return 0;
+        }
+
+        let removedCount = 0;
+        for (const objectId of matchingObjectIds) {
+            const relativeId = objectId.startsWith(`${this.namespace}.`)
+                ? objectId.slice(this.namespace.length + 1)
+                : objectId;
+            await this.delStateAsync(relativeId).catch(() => undefined);
+            await this.delObjectAsync(relativeId).catch(() => undefined);
+            removedCount++;
+        }
+
+        this.clearCachesForPrefix(relativePrefix);
+        return removedCount;
+    }
+
+    private async cleanupStaleDeviceFolders(config: ioBroker.AdapterConfig = this.config): Promise<void> {
+        const objects = await this.getAdapterObjectsAsync();
+        let removedCount = 0;
+
+        for (const [objectId, object] of Object.entries(objects)) {
+            if (object.type !== "channel" || !this.isRecord(object.native) || object.native.isDeviceRoot !== true) {
+                continue;
+            }
+
+            const deviceId = this.readString(object.native.deviceId)?.trim();
+            if (!deviceId) {
+                continue;
+            }
+
+            const expectedFullId = `${this.namespace}.${this.getDevicePath(deviceId, config)}`;
+            if (objectId === expectedFullId) {
+                continue;
+            }
+
+            const relativePrefix = objectId.startsWith(`${this.namespace}.`)
+                ? objectId.slice(this.namespace.length + 1)
+                : objectId;
+            removedCount += await this.removeAdapterObjectsByPrefix(relativePrefix);
+        }
+
+        const configuredAliases = new Set(
+            (config.deviceDisplayNames ?? [])
+                .map(entry => entry.deviceId?.trim())
+                .filter((entry): entry is string => !!entry),
+        );
+
+        for (const deviceId of configuredAliases) {
+            const defaultPath = `devices.${this.sanitizeSegment(deviceId)}`;
+            const expectedPath = this.getDevicePath(deviceId, config);
+            if (defaultPath === expectedPath) {
+                continue;
+            }
+            removedCount += await this.removeAdapterObjectsByPrefix(defaultPath);
+        }
+
+        if (removedCount > 0) {
+            this.log.debug(`Removed ${removedCount} stale device object(s) after device rename/update`);
         }
     }
 
@@ -1443,6 +1767,17 @@ export class NibeRestApi extends utils.Adapter {
 
     private sanitizeSegment(value: string): string {
         return value.replace(this.FORBIDDEN_CHARS, "_");
+    }
+
+    private normalizePointUnit(unit: string | undefined | null): string {
+        const normalizedUnit = String(unit || "").trim();
+        if (!normalizedUnit) {
+            return "";
+        }
+        if (normalizedUnit === "°") {
+            return "°C";
+        }
+        return normalizedUnit;
     }
 
     private formatApiResultValue(value: PointWriteResultValue): string {
@@ -1544,6 +1879,10 @@ export class NibeRestApi extends utils.Adapter {
         await this.setCachedState(id, { val, ack });
     }
 
+    private getStateUpdateMode(): "always" | "onValueChange" {
+        return this.config.stateUpdateMode === "always" ? "always" : "onValueChange";
+    }
+
     private async setCachedState(id: string, state: ioBroker.SettableState): Promise<void> {
         const normalizedState: CachedStateSnapshot = {
             val: state.val ?? null,
@@ -1551,7 +1890,11 @@ export class NibeRestApi extends utils.Adapter {
             q: state.q,
         };
         const cachedState = this.stateValueCache.get(id);
-        if (cachedState && this.areStateSnapshotsEqual(cachedState, normalizedState)) {
+        if (
+            this.getStateUpdateMode() === "onValueChange" &&
+            cachedState &&
+            this.areStateSnapshotsEqual(cachedState, normalizedState)
+        ) {
             return;
         }
 

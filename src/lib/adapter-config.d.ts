@@ -12,12 +12,14 @@ declare global {
         interface DiscoveredPointConfig {
             enabled?: boolean;
             deviceId?: string;
+            deviceName?: string;
             pointId?: number;
             title?: string;
             writable?: boolean;
             unit?: string;
             stateId?: string;
             currentValue?: ioBroker.StateValue;
+            intervalProfileId?: string;
         }
 
         interface CustomPointPollConfig {
@@ -27,6 +29,11 @@ declare global {
             intervalProfileId?: string;
         }
 
+        interface DeviceDisplayNameConfig {
+            deviceId?: string;
+            displayName?: string;
+        }
+
         interface AdapterConfig {
             baseUrl: string;
             username: string;
@@ -34,9 +41,11 @@ declare global {
             basicAuth: string;
             pollInterval: number;
             writeLockInterval: number;
+            stateUpdateMode?: "always" | "onValueChange";
             discoveredPointCatalog?: DiscoveredPointConfig[];
             customPollIntervals?: CustomPollIntervalConfig[];
             customPointPolls?: CustomPointPollConfig[];
+            deviceDisplayNames?: DeviceDisplayNameConfig[];
             deviceIds: string;
             ignoreTlsErrors: boolean;
             fetchNotifications: boolean;
