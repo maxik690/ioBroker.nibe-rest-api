@@ -1,8 +1,21 @@
 {
   "common": {
     "name": "nibe-rest-api",
-    "version": "0.0.2",
+    "version": "0.0.3",
     "news": {
+      "0.0.3": {
+        "en": "bump minor version",
+        "de": "stoß kleinere version",
+        "ru": "скачать минус версия",
+        "pt": "versão menor da colisão",
+        "nl": "bump kleine versie",
+        "fr": "version mineure",
+        "it": "urto versione minore",
+        "es": "versión menor",
+        "pl": "wersja drobna",
+        "uk": "bump незначна версія",
+        "zh-cn": "凸起小版本"
+      },
       "0.0.2": {
         "en": "initial release",
         "de": "erstausstrahlung",

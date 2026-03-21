@@ -1,6 +1,6 @@
 {
   "name": "iobroker.nibe-rest-api",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Read and write datapoints of your Nibe Heatpump via REST API (integrated from Firmware 4.6.4). Developed with my Nibe S1155.",
   "author": {
     "name": "Maximilian Kramer",
