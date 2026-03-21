@@ -42,7 +42,7 @@
     "@mui/material": "^6.5.0",
     "@tsconfig/node20": "^20.1.9",
     "@types/iobroker": "npm:@iobroker/types@^7.1.0",
-    "@types/node": "^20.19.37",
+    "@types/node": "^25.5.0",
     "@types/react": "^18.3.23",
     "@types/react-dom": "^18.3.7",
     "@vitejs/plugin-react": "^6.0.1",
