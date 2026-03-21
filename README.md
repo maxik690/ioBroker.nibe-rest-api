@@ -150,6 +150,11 @@ Special thanks to Matthias Kleine from haus-automatisierung.com for inspiration 
     Placeholder for the next version (at the beginning of the line):
     ### **WORK IN PROGRESS**
 -->
+
+### **WORK IN PROGRESS**
+
+- (Maximilian Kramer) bump minor version
+
 ### 0.0.2 (2026-03-21)
 
 - (Maximilian Kramer) initial release
