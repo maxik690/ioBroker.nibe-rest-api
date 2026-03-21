@@ -170,7 +170,9 @@ class NibeRestApi extends utils.Adapter {
       return;
     }
     if (this.pollInProgress) {
-      this.log.debug("Config updated while polling was in progress. New points will be synced in the current or next cycle");
+      this.log.debug(
+        "Config updated while polling was in progress. New points will be synced in the current or next cycle"
+      );
       return;
     }
     this.log.debug("Triggering immediate sync after config save");
@@ -445,7 +447,9 @@ class NibeRestApi extends utils.Adapter {
       const state = await this.getStateAsync(stateId).catch(() => null);
       devices.set(deviceId, ((_b = this.readString(state == null ? void 0 : state.val)) == null ? void 0 : _b.trim()) || deviceId);
     }
-    return Array.from(devices.entries()).map(([deviceId, deviceName]) => ({ deviceId, deviceName })).sort((left, right) => left.deviceName.localeCompare(right.deviceName) || left.deviceId.localeCompare(right.deviceId));
+    return Array.from(devices.entries()).map(([deviceId, deviceName]) => ({ deviceId, deviceName })).sort(
+      (left, right) => left.deviceName.localeCompare(right.deviceName) || left.deviceId.localeCompare(right.deviceId)
+    );
   }
   getIntervalProfileOptions() {
     var _a;

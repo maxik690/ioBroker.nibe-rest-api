@@ -329,7 +329,9 @@ export class NibeRestApi extends utils.Adapter {
         }
 
         if (this.pollInProgress) {
-            this.log.debug("Config updated while polling was in progress. New points will be synced in the current or next cycle");
+            this.log.debug(
+                "Config updated while polling was in progress. New points will be synced in the current or next cycle",
+            );
             return;
         }
 
@@ -667,7 +669,10 @@ export class NibeRestApi extends utils.Adapter {
 
         return Array.from(devices.entries())
             .map(([deviceId, deviceName]) => ({ deviceId, deviceName }))
-            .sort((left, right) => left.deviceName.localeCompare(right.deviceName) || left.deviceId.localeCompare(right.deviceId));
+            .sort(
+                (left, right) =>
+                    left.deviceName.localeCompare(right.deviceName) || left.deviceId.localeCompare(right.deviceId),
+            );
     }
 
     private getIntervalProfileOptions(): SelectOption[] {
@@ -1577,23 +1582,18 @@ export class NibeRestApi extends utils.Adapter {
         }
     }
 
-
     private getConfiguredDeviceDisplayName(
         deviceId: string,
         config: ioBroker.AdapterConfig = this.config,
     ): string | undefined {
-        return config.deviceDisplayNames
-            ?.find(entry => entry.deviceId?.trim() === deviceId)
-            ?.displayName?.trim();
+        return config.deviceDisplayNames?.find(entry => entry.deviceId?.trim() === deviceId)?.displayName?.trim();
     }
 
     private getCatalogDeviceDisplayName(
         deviceId: string,
         config: ioBroker.AdapterConfig = this.config,
     ): string | undefined {
-        return config.discoveredPointCatalog
-            ?.find(entry => entry.deviceId?.trim() === deviceId)
-            ?.deviceName?.trim();
+        return config.discoveredPointCatalog?.find(entry => entry.deviceId?.trim() === deviceId)?.deviceName?.trim();
     }
 
     private getDeviceDisplayName(

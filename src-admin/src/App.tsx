@@ -315,9 +315,6 @@ export default class App extends GenericApp<GenericAppProps, AppState> {
                 displayName: String(entry.displayName || ""),
             }))
             .filter(entry => entry.deviceId);
-        const configuredDeviceNames = new Map(
-            deviceDisplayNames.map(entry => [entry.deviceId, entry.displayName.trim()]).filter(([, value]) => !!value),
-        );
         const customPollAssignments = new Map<string, string>();
         (settings.customPointPolls || []).forEach(entry => {
             if (entry?.enabled === false || !entry?.intervalProfileId) {
@@ -380,14 +377,13 @@ export default class App extends GenericApp<GenericAppProps, AppState> {
         }));
         const knownDevices = this.getKnownDevices();
         const enabledDeviceIds = knownDevices.filter(device => device.enabled).map(device => device.deviceId);
-        const deviceIds =
-            !knownDevices.length
-                ? ""
-                : enabledDeviceIds.length === knownDevices.length
-                  ? ""
-                  : enabledDeviceIds.length
-                    ? enabledDeviceIds.join(",")
-                    : NO_ENABLED_DEVICES_MARKER;
+        const deviceIds = !knownDevices.length
+            ? ""
+            : enabledDeviceIds.length === knownDevices.length
+              ? ""
+              : enabledDeviceIds.length
+                ? enabledDeviceIds.join(",")
+                : NO_ENABLED_DEVICES_MARKER;
 
         return {
             ...settings,
@@ -450,20 +446,27 @@ export default class App extends GenericApp<GenericAppProps, AppState> {
 
     private async loadKnownDevices(): Promise<void> {
         try {
-            const response = await this.socket.sendTo<KnownDevice[] | { error?: string }>(this.instanceId, "getKnownDevices", {});
+            const response = await this.socket.sendTo<
+                | KnownDevice[]
+                | {
+                      error?: string;
+                  }
+            >(this.instanceId, "getKnownDevices", {});
             if (Array.isArray(response)) {
-                const rawDeviceIds = this.getNative().deviceIds
-                    .split(",")
+                const rawDeviceIds = this.getNative()
+                    .deviceIds.split(",")
                     .map(id => id.trim())
                     .filter(Boolean);
                 const noDeviceEnabled = rawDeviceIds.includes(NO_ENABLED_DEVICES_MARKER);
-                const configuredIds = new Set(
-                    rawDeviceIds.filter(id => id !== NO_ENABLED_DEVICES_MARKER),
-                );
+                const configuredIds = new Set(rawDeviceIds.filter(id => id !== NO_ENABLED_DEVICES_MARKER));
                 this.setState({
                     knownDevices: response.map(device => ({
                         ...device,
-                        enabled: noDeviceEnabled ? false : configuredIds.size === 0 ? true : configuredIds.has(device.deviceId),
+                        enabled: noDeviceEnabled
+                            ? false
+                            : configuredIds.size === 0
+                              ? true
+                              : configuredIds.has(device.deviceId),
                     })),
                 });
             }
@@ -498,7 +501,11 @@ export default class App extends GenericApp<GenericAppProps, AppState> {
         this.updateNativeValue("customPollIntervals", normalizeIntervalProfiles(rows));
     }
 
-    private getKnownDevices(): Array<{ deviceId: string; deviceName: string; configuredDisplayName: string }> {
+    private getKnownDevices(): Array<{
+        deviceId: string;
+        deviceName: string;
+        configuredDisplayName: string;
+    }> {
         const native = this.getNative();
         const configuredIds = native.deviceIds
             .split(",")
@@ -518,12 +525,7 @@ export default class App extends GenericApp<GenericAppProps, AppState> {
                 String(entry.deviceName || entry.deviceId || ""),
             ]),
         );
-        const objectNames = new Map(
-            this.state.knownDevices.map(entry => [
-                String(entry.deviceId || "").trim(),
-                entry,
-            ]),
-        );
+        const objectNames = new Map(this.state.knownDevices.map(entry => [String(entry.deviceId || "").trim(), entry]));
         const allDeviceIds = new Set<string>([
             ...Array.from(configuredNames.keys()).filter(Boolean),
             ...Array.from(configuredIdSet.values()).filter(Boolean),
@@ -534,13 +536,17 @@ export default class App extends GenericApp<GenericAppProps, AppState> {
         return Array.from(allDeviceIds)
             .map(deviceId => ({
                 deviceId,
-                deviceName: objectNames.get(deviceId)?.deviceName?.trim() || discoveredNames.get(deviceId)?.trim() || deviceId,
+                deviceName:
+                    objectNames.get(deviceId)?.deviceName?.trim() || discoveredNames.get(deviceId)?.trim() || deviceId,
                 configuredDisplayName: configuredNames.get(deviceId)?.trim() || "",
                 enabled:
                     objectNames.get(deviceId)?.enabled ??
                     (noDeviceEnabled ? false : configuredIdSet.size === 0 ? true : configuredIdSet.has(deviceId)),
             }))
-            .sort((left, right) => left.deviceName.localeCompare(right.deviceName) || left.deviceId.localeCompare(right.deviceId));
+            .sort(
+                (left, right) =>
+                    left.deviceName.localeCompare(right.deviceName) || left.deviceId.localeCompare(right.deviceId),
+            );
     }
 
     private updateKnownDeviceEnabled(deviceId: string, enabled: boolean): void {
@@ -550,14 +556,13 @@ export default class App extends GenericApp<GenericAppProps, AppState> {
             enabled: device.deviceId === deviceId ? enabled : device.enabled,
         }));
         const enabledDeviceIds = nextKnownDevices.filter(device => device.enabled).map(device => device.deviceId);
-        const deviceIds =
-            !nextKnownDevices.length
-                ? ""
-                : enabledDeviceIds.length === nextKnownDevices.length
-                  ? ""
-                  : enabledDeviceIds.length
-                    ? enabledDeviceIds.join(",")
-                    : NO_ENABLED_DEVICES_MARKER;
+        const deviceIds = !nextKnownDevices.length
+            ? ""
+            : enabledDeviceIds.length === nextKnownDevices.length
+              ? ""
+              : enabledDeviceIds.length
+                ? enabledDeviceIds.join(",")
+                : NO_ENABLED_DEVICES_MARKER;
 
         this.setState({ knownDevices: nextKnownDevices });
         this.updateNativeValue("deviceIds", deviceIds);
@@ -568,7 +573,10 @@ export default class App extends GenericApp<GenericAppProps, AppState> {
         const trimmedDeviceId = String(deviceId || "").trim();
         const trimmedDisplayName = String(displayName || "");
         const nextMappings = new Map(
-            (native.deviceDisplayNames || []).map(entry => [String(entry.deviceId || "").trim(), String(entry.displayName || "")]),
+            (native.deviceDisplayNames || []).map(entry => [
+                String(entry.deviceId || "").trim(),
+                String(entry.displayName || ""),
+            ]),
         );
 
         if (!trimmedDisplayName.trim()) {
@@ -586,7 +594,10 @@ export default class App extends GenericApp<GenericAppProps, AppState> {
         );
     }
 
-    private getIntervalProfileOptions(): Array<{ value: string; label: string }> {
+    private getIntervalProfileOptions(): Array<{
+        value: string;
+        label: string;
+    }> {
         const native = this.getNative();
         return [
             {
@@ -634,7 +645,14 @@ export default class App extends GenericApp<GenericAppProps, AppState> {
                 return true;
             }
 
-            return [entry.deviceName, entry.deviceId, entry.pointId, entry.title, entry.unit, formatCurrentValue(entry.currentValue)]
+            return [
+                entry.deviceName,
+                entry.deviceId,
+                entry.pointId,
+                entry.title,
+                entry.unit,
+                formatCurrentValue(entry.currentValue),
+            ]
                 .filter(Boolean)
                 .join(" ")
                 .toLowerCase()
@@ -761,18 +779,19 @@ export default class App extends GenericApp<GenericAppProps, AppState> {
         });
 
         try {
-            const response = await this.socket.sendTo<DiscoveredPoint[] | { error?: string }>(
-                this.instanceId,
-                "discoverPoints",
-                {
-                    baseUrl: native.baseUrl || "",
-                    username: native.username || "",
-                    password: native.password || "",
-                    basicAuth: native.basicAuth || "",
-                    ignoreTlsErrors: native.ignoreTlsErrors !== false,
-                    deviceIds: native.deviceIds || "",
-                },
-            );
+            const response = await this.socket.sendTo<
+                | DiscoveredPoint[]
+                | {
+                      error?: string;
+                  }
+            >(this.instanceId, "discoverPoints", {
+                baseUrl: native.baseUrl || "",
+                username: native.username || "",
+                password: native.password || "",
+                basicAuth: native.basicAuth || "",
+                ignoreTlsErrors: native.ignoreTlsErrors !== false,
+                deviceIds: native.deviceIds || "",
+            });
 
             if (!Array.isArray(response)) {
                 throw new Error(response?.error || I18n.t("Discovery failed"));
@@ -931,7 +950,10 @@ export default class App extends GenericApp<GenericAppProps, AppState> {
                             value={native.writeLockInterval}
                             inputProps={{ min: 0 }}
                             onChange={event =>
-                                this.updateNativeField("writeLockInterval", Math.max(Number(event.target.value) || 0, 0))
+                                this.updateNativeField(
+                                    "writeLockInterval",
+                                    Math.max(Number(event.target.value) || 0, 0),
+                                )
                             }
                         />
                         <Alert
@@ -1071,10 +1093,13 @@ export default class App extends GenericApp<GenericAppProps, AppState> {
             currentPage * this.state.discoveryRowsPerPage,
             (currentPage + 1) * this.state.discoveryRowsPerPage,
         );
-        const deviceOptions = ["", ...this.getKnownDevices().map(device => {
-            const displayName = device.configuredDisplayName || device.deviceName || device.deviceId;
-            return `${device.deviceId}:::${displayName}`;
-        })];
+        const deviceOptions = [
+            "",
+            ...this.getKnownDevices().map(device => {
+                const displayName = device.configuredDisplayName || device.deviceName || device.deviceId;
+                return `${device.deviceId}:::${displayName}`;
+            }),
+        ];
 
         return (
             <Paper sx={{ p: 2.5, borderRadius: 2.5 }}>
@@ -1125,7 +1150,9 @@ export default class App extends GenericApp<GenericAppProps, AppState> {
                         severity="info"
                         sx={{ mb: 1.5, py: 0 }}
                     >
-                        {I18n.t("Complete poll controls whether the device is included in the regular full device synchronization.")}
+                        {I18n.t(
+                            "Complete poll controls whether the device is included in the regular full device synchronization.",
+                        )}
                     </Alert>
                     <TableContainer>
                         <Table size="small">
@@ -1146,7 +1173,10 @@ export default class App extends GenericApp<GenericAppProps, AppState> {
                                                     size="small"
                                                     checked={device.enabled}
                                                     onChange={event =>
-                                                        this.updateKnownDeviceEnabled(device.deviceId, event.target.checked)
+                                                        this.updateKnownDeviceEnabled(
+                                                            device.deviceId,
+                                                            event.target.checked,
+                                                        )
                                                     }
                                                 />
                                             </TableCell>
@@ -1159,7 +1189,10 @@ export default class App extends GenericApp<GenericAppProps, AppState> {
                                                     placeholder={device.deviceName || device.deviceId}
                                                     value={device.configuredDisplayName}
                                                     onChange={event =>
-                                                        this.updateDeviceDisplayName(device.deviceId, event.target.value)
+                                                        this.updateDeviceDisplayName(
+                                                            device.deviceId,
+                                                            event.target.value,
+                                                        )
                                                     }
                                                 />
                                             </TableCell>
@@ -1371,8 +1404,12 @@ export default class App extends GenericApp<GenericAppProps, AppState> {
                                                 />
                                             </TableCell>
                                             <TableCell sx={{ py: 0.25 }}>
-                                                {this.getKnownDevices().find(device => device.deviceId === entry.deviceId)?.configuredDisplayName ||
-                                                    this.getKnownDevices().find(device => device.deviceId === entry.deviceId)?.deviceName ||
+                                                {this.getKnownDevices().find(
+                                                    device => device.deviceId === entry.deviceId,
+                                                )?.configuredDisplayName ||
+                                                    this.getKnownDevices().find(
+                                                        device => device.deviceId === entry.deviceId,
+                                                    )?.deviceName ||
                                                     entry.deviceId}
                                             </TableCell>
                                             <TableCell sx={{ py: 0.25 }}>{entry.pointId}</TableCell>
@@ -1394,7 +1431,8 @@ export default class App extends GenericApp<GenericAppProps, AppState> {
                                                     value={entry.intervalProfileId || ""}
                                                     displayEmpty
                                                     renderValue={selected => {
-                                                        const selectedValue = String(selected || "");
+                                                        const selectedValue =
+                                                            typeof selected === "string" ? selected : "";
                                                         const option = this.getIntervalProfileOptions().find(
                                                             current => current.value === selectedValue,
                                                         );
@@ -1547,8 +1585,10 @@ export default class App extends GenericApp<GenericAppProps, AppState> {
                                         SelectProps={{
                                             displayEmpty: true,
                                             renderValue: selected => {
-                                                const selectedValue = String(selected || "");
-                                                const option = alternatives.find(current => current.value === selectedValue);
+                                                const selectedValue = typeof selected === "string" ? selected : "";
+                                                const option = alternatives.find(
+                                                    current => current.value === selectedValue,
+                                                );
                                                 return option?.label || I18n.t("Select profile...");
                                             },
                                         }}
