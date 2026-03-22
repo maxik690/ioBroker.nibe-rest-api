@@ -885,6 +885,36 @@ class NibeRestApi extends utils.Adapter {
     const token = import_node_buffer.Buffer.from(`${username != null ? username : ""}:${password != null ? password : ""}`).toString("base64");
     return `Basic ${token}`;
   }
+  getAuthorizationMode(discoveryConfig) {
+    var _a, _b, _c;
+    const basicAuth = (_a = discoveryConfig == null ? void 0 : discoveryConfig.basicAuth) != null ? _a : this.config.basicAuth;
+    const username = (_b = discoveryConfig == null ? void 0 : discoveryConfig.username) != null ? _b : this.config.username;
+    const password = (_c = discoveryConfig == null ? void 0 : discoveryConfig.password) != null ? _c : this.config.password;
+    if (basicAuth == null ? void 0 : basicAuth.trim()) {
+      return "basicHash";
+    }
+    if ((username == null ? void 0 : username.trim()) || (password == null ? void 0 : password.trim())) {
+      return "usernamePassword";
+    }
+    return "none";
+  }
+  formatApiErrorMessage(options, requestPath, statusCode, rawData, discoveryConfig) {
+    var _a, _b;
+    let details = statusCode != null ? `HTTP ${statusCode}` : "request failed";
+    try {
+      const parsed = rawData ? JSON.parse(rawData) : void 0;
+      if (parsed == null ? void 0 : parsed.error) {
+        details = parsed.error;
+      }
+    } catch {
+      if (rawData) {
+        details = rawData;
+      }
+    }
+    const compactDetails = details.replace(/\s+/g, " ").trim();
+    const tlsMode = ((_a = discoveryConfig == null ? void 0 : discoveryConfig.ignoreTlsErrors) != null ? _a : this.config.ignoreTlsErrors) ? "tls=ignore" : "tls=strict";
+    return `${(_b = options.method) != null ? _b : "GET"} ${requestPath.pathname}${requestPath.search} at ${requestPath.origin} failed: ${compactDetails} (auth=${this.getAuthorizationMode(discoveryConfig)}, ${tlsMode})`;
+  }
   async apiRequest(options, discoveryConfig) {
     var _a, _b;
     const resolvedBaseUrl = ((_a = discoveryConfig == null ? void 0 : discoveryConfig.baseUrl) == null ? void 0 : _a.trim()) || this.config.baseUrl;
@@ -923,18 +953,17 @@ class NibeRestApi extends utils.Adapter {
             var _a3;
             const statusCode = (_a3 = response.statusCode) != null ? _a3 : 500;
             if (statusCode < 200 || statusCode >= 300) {
-              let message = `HTTP ${statusCode}`;
-              try {
-                const parsed = rawData ? JSON.parse(rawData) : void 0;
-                if (parsed == null ? void 0 : parsed.error) {
-                  message = parsed.error;
-                }
-              } catch {
-                if (rawData) {
-                  message = rawData;
-                }
-              }
-              reject(new Error(message));
+              reject(
+                new Error(
+                  this.formatApiErrorMessage(
+                    options,
+                    requestPath,
+                    response.statusCode,
+                    rawData,
+                    discoveryConfig
+                  )
+                )
+              );
               return;
             }
             if (!rawData) {
@@ -949,7 +978,19 @@ class NibeRestApi extends utils.Adapter {
           });
         }
       );
-      request.on("error", reject);
+      request.on("error", (error) => {
+        reject(
+          new Error(
+            this.formatApiErrorMessage(
+              options,
+              requestPath,
+              void 0,
+              error instanceof Error ? error.message : String(error),
+              discoveryConfig
+            )
+          )
+        );
+      });
       request.setTimeout(NibeRestApi.API_REQUEST_TIMEOUT_MS, () => {
         request.destroy(
           new Error(

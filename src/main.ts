@@ -1186,6 +1186,47 @@ export class NibeRestApi extends utils.Adapter {
         return `Basic ${token}`;
     }
 
+    private getAuthorizationMode(discoveryConfig?: DiscoveryRequestConfig): "basicHash" | "usernamePassword" | "none" {
+        const basicAuth = discoveryConfig?.basicAuth ?? this.config.basicAuth;
+        const username = discoveryConfig?.username ?? this.config.username;
+        const password = discoveryConfig?.password ?? this.config.password;
+
+        if (basicAuth?.trim()) {
+            return "basicHash";
+        }
+
+        if (username?.trim() || password?.trim()) {
+            return "usernamePassword";
+        }
+
+        return "none";
+    }
+
+    private formatApiErrorMessage(
+        options: RequestOptions,
+        requestPath: URL,
+        statusCode: number | undefined,
+        rawData: string,
+        discoveryConfig?: DiscoveryRequestConfig,
+    ): string {
+        let details = statusCode != null ? `HTTP ${statusCode}` : "request failed";
+
+        try {
+            const parsed = rawData ? (JSON.parse(rawData) as ErrorResponsePayload) : undefined;
+            if (parsed?.error) {
+                details = parsed.error;
+            }
+        } catch {
+            if (rawData) {
+                details = rawData;
+            }
+        }
+
+        const compactDetails = details.replace(/\s+/g, " ").trim();
+        const tlsMode = discoveryConfig?.ignoreTlsErrors ?? this.config.ignoreTlsErrors ? "tls=ignore" : "tls=strict";
+        return `${options.method ?? "GET"} ${requestPath.pathname}${requestPath.search} at ${requestPath.origin} failed: ${compactDetails} (auth=${this.getAuthorizationMode(discoveryConfig)}, ${tlsMode})`;
+    }
+
     private async apiRequest<T>(options: RequestOptions, discoveryConfig?: DiscoveryRequestConfig): Promise<T> {
         const resolvedBaseUrl = discoveryConfig?.baseUrl?.trim() || this.config.baseUrl;
         const baseUrl = new URL(resolvedBaseUrl);
@@ -1224,18 +1265,17 @@ export class NibeRestApi extends utils.Adapter {
                     response.on("end", () => {
                         const statusCode = response.statusCode ?? 500;
                         if (statusCode < 200 || statusCode >= 300) {
-                            let message = `HTTP ${statusCode}`;
-                            try {
-                                const parsed = rawData ? (JSON.parse(rawData) as ErrorResponsePayload) : undefined;
-                                if (parsed?.error) {
-                                    message = parsed.error;
-                                }
-                            } catch {
-                                if (rawData) {
-                                    message = rawData;
-                                }
-                            }
-                            reject(new Error(message));
+                            reject(
+                                new Error(
+                                    this.formatApiErrorMessage(
+                                        options,
+                                        requestPath,
+                                        response.statusCode,
+                                        rawData,
+                                        discoveryConfig,
+                                    ),
+                                ),
+                            );
                             return;
                         }
 
@@ -1253,7 +1293,19 @@ export class NibeRestApi extends utils.Adapter {
                 },
             );
 
-            request.on("error", reject);
+            request.on("error", error => {
+                reject(
+                    new Error(
+                        this.formatApiErrorMessage(
+                            options,
+                            requestPath,
+                            undefined,
+                            error instanceof Error ? error.message : String(error),
+                            discoveryConfig,
+                        ),
+                    ),
+                );
+            });
             request.setTimeout(NibeRestApi.API_REQUEST_TIMEOUT_MS, () => {
                 request.destroy(
                     new Error(
